@@ -1,49 +1,27 @@
-import React, { useCallback } from 'react';
 import { useAnimation } from '../contexts/AnimationContext';
+import Icon from './Icon';
+import Section from './Section';
 
-const BoneList = () => {
-  const {
-    bones,
-    selectedBoneName,
-    setSelectedBoneName,
-    isSceneReady,
-    isLoadingModel,
-    isGizmoDraggingRef
-  } = useAnimation();
-
-  const handleBoneSelect = useCallback((boneName) => {
-    if (!isGizmoDraggingRef.current) {
-      setSelectedBoneName(boneName);
-    }
-  }, [setSelectedBoneName, isGizmoDraggingRef]);
-
+export default function BoneList() {
+  const { bones, selectedBoneName, setSelectedBoneName, isPlaying, isGizmoDraggingRef, isLoadingModel, keyFrames } = useAnimation();
   return (
-    <div className="section">
-      <h4>Bones</h4>
-      <div className="bone-list">
-        {isSceneReady && bones.map(bone => (
-          <div 
-            key={bone.name} 
-            onClick={() => handleBoneSelect(bone.name)}
-            className={`bone-item ${selectedBoneName === bone.name ? 'selected' : ''}`}
-          >
-            <svg className="bone-icon" viewBox="0 0 16 16" fill="currentColor">
-              <circle cx="3" cy="8" r="2"/>
-              <circle cx="13" cy="8" r="2"/>
-              <rect x="3" y="7" width="10" height="2"/>
-            </svg>
-            {bone.name}
-          </div>
+    <Section index="01" title="Bones" detail={`${bones.length} JOINTS`}>
+      <ul className="bone-list" aria-label="Bones">
+        {bones.map(({ name }) => (
+          <li key={name}>
+            <button
+              className="bone-item"
+              aria-pressed={name === selectedBoneName}
+              disabled={isPlaying || isLoadingModel}
+              onClick={() => !isGizmoDraggingRef.current && setSelectedBoneName(name)}
+              title={name}
+            >
+              <Icon name="bone" /> <span>{name}</span>
+              {Object.hasOwn(keyFrames, name) && keyFrames[name]?.length > 0 && <i className="bone-keyed" title="Animated bone" />}
+            </button>
+          </li>
         ))}
-        {(!isSceneReady && !isLoadingModel) && 
-          <div className="bone-item">Load a model to see bones.</div>
-        }
-        {isLoadingModel && 
-          <div className="bone-item">Loading bones...</div>
-        }
-      </div>
-    </div>
+      </ul>
+    </Section>
   );
-};
-
-export default BoneList;
+}

@@ -2,6 +2,7 @@ import * as GlobalTHREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { createThreeAnimationTracks, sampleSteppedPose } from '../utils/steppedAnimation.js';
 
 const TARGET_MODEL_MAX_DIMENSION = 150; // Used to normalize model size on import
 
@@ -16,6 +17,7 @@ class SceneManager {
         this.transformControls = null; 
         
         this.model = null;
+        this.modelStage = new GlobalTHREE.Group(); // Viewport framing only; never exported.
         this.skeletonHelper = null;
         this.bones = [];
         this.boneMap = new Map(); 
@@ -32,13 +34,13 @@ class SceneManager {
         this.onGizmoDraggingChangedCallback = null;
         this.onBoneClickCallback = null;
         this.animationFrameId = null;
-        this.onWindowResizeBound = null;
+        this.resizeObserver = null;
         this.onMouseClickBound = null;
 
         this.boneMarkersGroup = new GlobalTHREE.Group();
         this.markerGeometry = new GlobalTHREE.SphereGeometry(2.5, 8, 8); // Small marker size
-        this.defaultMarkerMaterial = new GlobalTHREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false });
-        this.selectedMarkerMaterial = new GlobalTHREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+        this.defaultMarkerMaterial = new GlobalTHREE.MeshBasicMaterial({ color: 0x75e0cc, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false });
+        this.selectedMarkerMaterial = new GlobalTHREE.MeshBasicMaterial({ color: 0xffca75, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
         this.boneMarkersGroup.renderOrder = 1; // Render markers on top
 
         this.init(); 
@@ -49,22 +51,22 @@ class SceneManager {
         const THREE = GlobalTHREE; 
         if (!this.scene) {
             this.scene = new THREE.Scene();
-            this.scene.background = new THREE.Color(0xcccccc);
-            this.scene.fog = new THREE.FogExp2(0xcccccc, 0.002);
+            this.scene.background = new THREE.Color(0x141b21);
+            this.scene.fog = new THREE.FogExp2(0x141b21, 0.00115);
         }
 
-        this.scene.add(this.boneMarkersGroup);
+        this.scene.add(this.modelStage, this.boneMarkersGroup);
 
         if (!this.renderer) {
             this.renderer = new THREE.WebGLRenderer({ antialias: true });
-            this.renderer.setPixelRatio(window.devicePixelRatio);
+            this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             this.renderer.shadowMap.enabled = true;
             if(this.containerElement && this.renderer.domElement && !this.containerElement.contains(this.renderer.domElement)) {
                 this.containerElement.appendChild(this.renderer.domElement);
             }
         }
         if (this.containerElement && this.renderer) { 
-             this.renderer.setSize(this.containerElement.clientWidth, this.containerElement.clientHeight);
+             this.renderer.setSize(this.containerElement.clientWidth, this.containerElement.clientHeight, false);
         }
 
 
@@ -111,9 +113,9 @@ class SceneManager {
             this.scene.add(dirLight);
         }
         if (!this.scene.getObjectByName("gridHelper")) {
-            const grid = new THREE.GridHelper(2000, 20, 0x000000, 0x000000);
+            const grid = new THREE.GridHelper(2000, 40, 0x608d94, 0x374954);
             grid.name = "gridHelper";
-            grid.material.opacity = 0.2;
+            grid.material.opacity = 0.7;
             grid.material.transparent = true;
             this.scene.add(grid);
         }
@@ -147,15 +149,13 @@ class SceneManager {
             this.scene.add(this.transformControls);
         }
         
-        if (this.onWindowResizeBound) { 
-            window.removeEventListener('resize', this.onWindowResizeBound);
-        }
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = new ResizeObserver(() => this.onWindowResize());
+        this.resizeObserver.observe(this.containerElement);
         if (this.onMouseClickBound) {
             this.renderer.domElement.removeEventListener('click', this.onMouseClickBound);
         }
-        this.onWindowResizeBound = this.onWindowResize.bind(this); 
         this.onMouseClickBound = this.onMouseClick.bind(this);
-        window.addEventListener('resize', this.onWindowResizeBound);
         if (this.renderer && this.renderer.domElement) {
             this.renderer.domElement.addEventListener('click', this.onMouseClickBound);
         }
@@ -163,9 +163,11 @@ class SceneManager {
 
     onWindowResize() {
         if (!this.containerElement || !this.renderer || !this.camera) return;
-        this.camera.aspect = this.containerElement.clientWidth / this.containerElement.clientHeight;
+        const { clientWidth: width, clientHeight: height } = this.containerElement;
+        if (!width || !height) return;
+        this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(this.containerElement.clientWidth, this.containerElement.clientHeight);
+        this.renderer.setSize(width, height, false);
     }
 
     onMouseClick(event) {
@@ -239,9 +241,10 @@ class SceneManager {
     }
 
     clearModel() {
-        this.detachGizmo(); 
-        if (this.model && this.scene) { 
-            this.scene.remove(this.model);
+        this.detachGizmo();
+        this.stopAnimation();
+        if (this.model) {
+            this.modelStage.remove(this.model);
             this.model.traverse(child => {
                 if (child.isMesh) {
                     child.geometry?.dispose();
@@ -265,87 +268,65 @@ class SceneManager {
         }
         this.bones = [];
         this.boneMap.clear();
+        this.modelStage.position.set(0, 0, 0);
+        this.modelStage.scale.setScalar(1);
 
         while(this.boneMarkersGroup.children.length > 0){
             this.boneMarkersGroup.remove(this.boneMarkersGroup.children[0]);
         }
     }
 
-    loadModel(url) {
-        const THREE = GlobalTHREE;
-        return new Promise((resolve, reject) => {
-            if (!this.scene) { 
-                this.init(); 
-                if(!this.scene) {
-                    reject(new Error("SceneManager.loadModel: Scene could not be initialized."));
-                    return;
-                }
+    async loadModel(file) {
+        this.clearModel();
+        const buffer = await file.arrayBuffer();
+        if (!this.scene) throw new Error('The viewport is unavailable.');
+        const object = new FBXLoader().parse(buffer, '');
+        this.model = object;
+        this.modelStage.add(object);
+        this.modelStage.updateMatrixWorld(true);
+
+        const initialBoneData = Object.create(null);
+        object.traverse(child => {
+            if (child.isBone) {
+                this.bones.push({ name: child.name, bone: child });
+                this.boneMap.set(child.name, child);
+                const { x, y, z } = child.position;
+                const { x: qx, y: qy, z: qz, w } = child.quaternion;
+                child.userData.initialLocalPosition = { x, y, z };
+                child.userData.initialLocalQuaternion = { x: qx, y: qy, z: qz, w };
+                initialBoneData[child.name] = {
+                    position: child.userData.initialLocalPosition,
+                    quaternion: child.userData.initialLocalQuaternion,
+                };
             }
-            this.clearModel(); 
-            const loader = new FBXLoader();
-            loader.load(url, (object) => {
-                this.model = object;
-                const initialBox = new THREE.Box3().setFromObject(this.model);
-                const initialSize = initialBox.getSize(new THREE.Vector3());
-                const maxDim = Math.max(initialSize.x, initialSize.y, initialSize.z);
-                let desiredScale = 1.0;
-                if (maxDim > 0 && !isNaN(maxDim) && isFinite(maxDim)) { 
-                    desiredScale = TARGET_MODEL_MAX_DIMENSION / maxDim; 
-                }
-                this.model.scale.setScalar(desiredScale);
-                const scaledBox = new THREE.Box3().setFromObject(this.model);
-                const scaledBoxCenter = scaledBox.getCenter(new THREE.Vector3());
-                this.model.position.set(
-                    -scaledBoxCenter.x, -scaledBox.min.y, -scaledBoxCenter.z
-                );
-                if (this.scene) { this.scene.add(this.model); } 
-                else { reject(new Error("Scene is null, cannot add model.")); return; }
-                this.model.updateMatrixWorld(true);
-                const initialBoneData = {};
-                this.model.traverse((child) => {
-                    if (child.isBone) {
-                        this.bones.push({ name: child.name, bone: child });
-                        this.boneMap.set(child.name, child);
-                        
-                        const pos = child.position.clone(); 
-                        const quat = child.quaternion.clone(); 
-
-                        child.userData.initialLocalPosition = { x: pos.x, y: pos.y, z: pos.z };
-                        child.userData.initialLocalQuaternion = { x: quat.x, y: quat.y, z: quat.z, w: quat.w };
-                        
-                        initialBoneData[child.name] = {
-                            position: { 
-                                x: typeof pos.x === 'number' ? pos.x : 0, 
-                                y: typeof pos.y === 'number' ? pos.y : 0, 
-                                z: typeof pos.z === 'number' ? pos.z : 0 
-                            },
-                            quaternion: { 
-                                x: typeof quat.x === 'number' ? quat.x : 0, 
-                                y: typeof quat.y === 'number' ? quat.y : 0, 
-                                z: typeof quat.z === 'number' ? quat.z : 0, 
-                                w: typeof quat.w === 'number' ? quat.w : 1 
-                            }
-                        };
-                    }
-                    if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
-                });
-                this.bones.sort((a, b) => a.name.localeCompare(b.name));
-                this.createOrUpdateBoneMarkers(); 
-
-                this.skeletonHelper = new THREE.SkeletonHelper(this.model);
-                this.skeletonHelper.visible = true;
-                if (this.scene) { this.scene.add(this.skeletonHelper); }
-                this.mixer = new THREE.AnimationMixer(this.model);
-                const worldBoundingBox = new THREE.Box3().setFromObject(this.model); 
-                const worldCenter = worldBoundingBox.getCenter(new THREE.Vector3());
-                if (this.controls) { this.controls.target.copy(worldCenter); this.controls.update(); }
-                if(this.camera) this.camera.lookAt(worldCenter); 
-                resolve(initialBoneData); 
-            }, undefined, (error) => {
-                console.error(`SceneManager.loadModel: An error happened during FBX loading (${url}):`, error);
-                reject(error);
-            });
+            if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+            }
         });
+        this.bones.sort((a, b) => a.name.localeCompare(b.name));
+
+        const box = new GlobalTHREE.Box3().setFromObject(object);
+        if (box.isEmpty()) {
+            // A skeleton-only FBX (including our export) has no mesh bounds.
+            for (const { bone } of this.bones) box.expandByPoint(bone.getWorldPosition(new GlobalTHREE.Vector3()));
+        }
+        const size = box.getSize(new GlobalTHREE.Vector3());
+        const maxDimension = Math.max(size.x, size.y, size.z);
+        const scale = Number.isFinite(maxDimension) && maxDimension > 0 ? TARGET_MODEL_MAX_DIMENSION / maxDimension : 1;
+        this.modelStage.scale.setScalar(scale);
+        const center = box.getCenter(new GlobalTHREE.Vector3());
+        if (!box.isEmpty()) this.modelStage.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+        this.modelStage.updateMatrixWorld(true);
+
+        this.createOrUpdateBoneMarkers();
+        this.skeletonHelper = new GlobalTHREE.SkeletonHelper(object);
+        this.scene.add(this.skeletonHelper);
+        this.mixer = new GlobalTHREE.AnimationMixer(object);
+        this.controls.target.set(0, size.y * scale / 2, 0);
+        this.camera.position.copy(this.controls.target).add(new GlobalTHREE.Vector3(185, 135, 235));
+        this.controls.update();
+        return initialBoneData;
     }
 
     getBones() { return this.bones.map(b => ({ name: b.name })); }
@@ -423,166 +404,51 @@ class SceneManager {
 
     setOnBoneTransformChangeByGizmo(callback) { this.onBoneTransformChangeByGizmoCallback = callback; }
 
-    playAnimationFromData(keyFramesData, duration) {
-        const THREE = GlobalTHREE;
-        if (!this.model || !this.mixer) { 
-            console.warn("SceneManager: Cannot play animation - model or mixer not ready."); 
-            return; 
-        }
-        this.detachGizmo(); 
-        if (this.activeAction) {
-            this.activeAction.stop();
-            if (this.activeAction.getClip()) this.mixer.uncacheClip(this.activeAction.getClip()); 
-            this.activeAction = null; 
-        }
-        const tracks = [];
-        for (const boneName in keyFramesData) {
-            const boneTrackData = keyFramesData[boneName];
-            const bone = this.getBoneByName(boneName);
-            if (bone && boneTrackData && boneTrackData.length > 0) {
-                const rotTimes = boneTrackData.filter(kf => kf.rotation).map(kf => kf.time).sort((a,b)=>a-b);
-                const rotValues = [];
-                if (rotTimes.length > 0) { 
-                    rotTimes.forEach(t => {
-                        const kf = boneTrackData.find(kf => kf.time === t && kf.rotation);
-                        if(kf) rotValues.push(kf.rotation.x, kf.rotation.y, kf.rotation.z, kf.rotation.w);
-                    });
-                    if (rotValues.length > 0) tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, rotTimes, rotValues));
-                }
-                const posTimes = boneTrackData.filter(kf => kf.position).map(kf => kf.time).sort((a,b)=>a-b);
-                const posValues = [];
-                 if (posTimes.length > 0) {
-                    posTimes.forEach(t => {
-                        const kf = boneTrackData.find(kf => kf.time === t && kf.position);
-                        if(kf) posValues.push(kf.position.x, kf.position.y, kf.position.z);
-                    });
-                    if (posValues.length > 0) tracks.push(new THREE.VectorKeyframeTrack(`${boneName}.position`, posTimes, posValues));
-                }
-            }
-        }
-        if (tracks.length === 0) { 
-            console.warn("SceneManager: No keyframe tracks to play."); 
-            return; 
-        } 
-        const clip = new THREE.AnimationClip("customAnimation", duration, tracks);
+    playAnimationFromData(keyFramesData, duration, startTime) {
+        if (!this.model || !this.mixer) return false;
+        const tracks = createThreeAnimationTracks(keyFramesData, this, duration);
+        if (!tracks.length) return false;
+        this.stopAnimation();
+        this.detachGizmo();
+        const time = startTime < duration ? startTime : 0;
+        this.applyPoseFromData(Object.fromEntries(
+            this.bones.map(({ name }) => [name, this.getPoseAtTimeForBone(name, keyFramesData, time)]),
+        ));
+        const clip = new GlobalTHREE.AnimationClip('Timeline', duration, tracks);
         this.activeAction = this.mixer.clipAction(clip);
-        this.activeAction.setLoop(THREE.LoopRepeat); 
         this.activeAction.reset().play();
-        this.mixer.setTime(0); 
-        this.clock.start(); 
+        this.mixer.setTime(time);
+        this.clock.start();
+        return true;
     }
-    
-    pauseAnimation() { if (this.activeAction && this.mixer) this.mixer.timeScale = 0; }
-    resumeAnimation() { if (this.activeAction && this.mixer) { this.mixer.timeScale = 1; this.detachGizmo(); } }
+
     stopAnimation() {
-        if (this.mixer) { this.mixer.stopAllAction(); this.mixer.setTime(0); }
-        if (this.activeAction) {
-            if(this.activeAction.getClip() && this.mixer) this.mixer.uncacheClip(this.activeAction.getClip());
-            this.activeAction = null; 
-        }
-        if (this.transformControls && this.transformControls.userData?.selectedBoneName) {
-            const boneName = this.transformControls.userData.selectedBoneName;
-            if(this.getBoneByName(boneName)) this.attachGizmo(boneName);
-        }
+        if (!this.activeAction) return;
+        this.activeAction.stop();
+        this.mixer.uncacheClip(this.activeAction.getClip());
+        this.activeAction = null;
     }
+
     setOnTimeUpdate(callback) { this.onTimeUpdateCallback = callback; }
 
-    interpolatePoseAtTimeForBone(boneName, keyFramesData, time) {
-        const THREE = GlobalTHREE; 
-
-        const bone = this.boneMap.get(boneName);
-        if (!bone || !bone.userData.initialLocalPosition || !bone.userData.initialLocalQuaternion) {
-            return { 
-                position: { x:0, y:0, z:0 }, 
-                quaternion: { x:0, y:0, z:0, w:1 } 
-            };
-        }
-
-        let finalPosition = { ...bone.userData.initialLocalPosition };
-        let finalQuaternion = { ...bone.userData.initialLocalQuaternion };
-
-        const track = keyFramesData[boneName];
-
-        if (track && track.length > 0) {
-            let kf1_rot = null, kf2_rot = null;
-            const rotKeyframes = track.filter(kf => kf.rotation);
-            for (const kf of rotKeyframes) {
-                if (kf.time <= time) kf1_rot = kf;
-                if (kf.time > time) { kf2_rot = kf; break; }
-            }
-            
-            let kf1_pos = null, kf2_pos = null;
-            const posKeyframes = track.filter(kf => kf.position);
-            for (const kf of posKeyframes) {
-                if (kf.time <= time) kf1_pos = kf;
-                if (kf.time > time) { kf2_pos = kf; break; }
-            }
-            
-            if (kf1_rot && kf1_rot.rotation) {
-                const q1 = new THREE.Quaternion(kf1_rot.rotation.x, kf1_rot.rotation.y, kf1_rot.rotation.z, kf1_rot.rotation.w);
-                if (!kf2_rot || !kf2_rot.rotation || kf1_rot.time >= time ) { 
-                    finalQuaternion = { x: q1.x, y: q1.y, z: q1.z, w: q1.w };
-                } else {
-                    const t = (kf2_rot.time - kf1_rot.time === 0) ? 0 : Math.max(0, Math.min(1, (time - kf1_rot.time) / (kf2_rot.time - kf1_rot.time)));
-                    const q2 = new THREE.Quaternion(kf2_rot.rotation.x, kf2_rot.rotation.y, kf2_rot.rotation.z, kf2_rot.rotation.w);
-                    
-                    const tempSlerpQ = q1.clone(); 
-                    tempSlerpQ.slerp(q2, t);    
-                    finalQuaternion = { x: tempSlerpQ.x, y: tempSlerpQ.y, z: tempSlerpQ.z, w: tempSlerpQ.w };
-                }
-            } else {
-                 const firstKfWithRot = rotKeyframes.length > 0 ? rotKeyframes[0] : null;
-                 if (firstKfWithRot && firstKfWithRot.rotation && time < firstKfWithRot.time) {
-                   finalQuaternion = { ...firstKfWithRot.rotation };
-                }
-            }
-
-            if (kf1_pos && kf1_pos.position) {
-                const p1 = new THREE.Vector3(kf1_pos.position.x, kf1_pos.position.y, kf1_pos.position.z);
-                if (!kf2_pos || !kf2_pos.position || kf1_pos.time >= time) { 
-                    finalPosition = { x: p1.x, y: p1.y, z: p1.z };
-                } else {
-                    const t = (kf2_pos.time - kf1_pos.time === 0) ? 0 : Math.max(0, Math.min(1, (time - kf1_pos.time) / (kf2_pos.time - kf1_pos.time)));
-                    const p2 = new THREE.Vector3(kf2_pos.position.x, kf2_pos.position.y, kf2_pos.position.z);
-                    const tempV = new THREE.Vector3().lerpVectors(p1, p2, t); 
-                    finalPosition = { x: tempV.x, y: tempV.y, z: tempV.z };
-                }
-            } else {
-                const firstKfWithPos = posKeyframes.length > 0 ? posKeyframes[0] : null;
-                if (firstKfWithPos && firstKfWithPos.position && time < firstKfWithPos.time ) {
-                    finalPosition = { ...firstKfWithPos.position };
-                }
-            }
-        }
-        return { position: finalPosition, quaternion: finalQuaternion };
+    getPoseAtTimeForBone(boneName, keyFramesData, time) {
+        const data = this.getBoneByName(boneName)?.userData;
+        return sampleSteppedPose(Object.hasOwn(keyFramesData, boneName) ? keyFramesData[boneName] : [], time, {
+            position: data?.initialLocalPosition ?? { x: 0, y: 0, z: 0 },
+            quaternion: data?.initialLocalQuaternion ?? { x: 0, y: 0, z: 0, w: 1 },
+        });
     }
 
     animate() {
-        const THREE = GlobalTHREE; 
-        this.animationFrameId = requestAnimationFrame(this.animate.bind(this)); 
-        if (!this.renderer || !this.scene || !this.camera) return; 
+        this.animationFrameId = requestAnimationFrame(this.animate.bind(this));
+        if (!this.renderer || !this.scene || !this.camera) return;
 
         const deltaTime = this.clock.getDelta();
-        let isGizmoCurrentlyDragging = false;
-        if (this.transformControls && this.transformControls.dragging && this.transformControls.object) {
-            isGizmoCurrentlyDragging = true;
+        if (this.activeAction) {
+            this.mixer.update(deltaTime);
+            this.onTimeUpdateCallback?.(this.activeAction.time);
         }
 
-        if (this.mixer && !isGizmoCurrentlyDragging) { 
-            this.mixer.update(deltaTime);
-            if (this.activeAction && this.activeAction.isRunning() && this.onTimeUpdateCallback) {
-                let currentTimeInMixer = this.mixer.time;
-                const clip = this.activeAction.getClip();
-                if (clip) {
-                    const clipDuration = clip.duration;
-                    if (clipDuration && clipDuration > 0) { 
-                        currentTimeInMixer = currentTimeInMixer % clipDuration; 
-                    }
-                    this.onTimeUpdateCallback(currentTimeInMixer);
-                }
-            }
-        }
-        
         if (this.controls) {
             this.controls.update(); 
         }
@@ -599,10 +465,8 @@ class SceneManager {
             cancelAnimationFrame(this.animationFrameId);
             this.animationFrameId = null;
         }
-        if (this.onWindowResizeBound) {
-            window.removeEventListener('resize', this.onWindowResizeBound);
-            this.onWindowResizeBound = null;
-        }
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = null;
         if (this.onMouseClickBound && this.renderer && this.renderer.domElement) {
             this.renderer.domElement.removeEventListener('click', this.onMouseClickBound);
             this.onMouseClickBound = null;

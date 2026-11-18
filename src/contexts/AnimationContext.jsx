@@ -1,5 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import * as THREE from 'three';
+import { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 const AnimationContext = createContext();
 
@@ -28,12 +27,20 @@ export const AnimationProvider = ({ children }) => {
   const [animationName, setAnimationName] = useState('MyAnimation');
   const [animationDuration, setAnimationDuration] = useState(5);
   const [currentTime, setCurrentTime] = useState(0);
+  const [seekVersion, setSeekVersion] = useState(0);
   const [keyFrames, setKeyFrames] = useState({});
   const [isPlaying, setIsPlaying] = useState(false);
   
   // Refs
   const isGizmoDraggingRef = useRef(false);
   const sceneManagerRef = useRef(null);
+
+  const seekToTime = useCallback(time => {
+    if (!Number.isFinite(time)) return;
+    setCurrentTime(Math.min(animationDuration, Math.max(0, time)));
+    // Clicking the current marker again snaps back from any unkeyed edits.
+    setSeekVersion(version => version + 1);
+  }, [animationDuration]);
 
   // Reset function for new model
   const resetAllStateForNewModel = useCallback(() => {
@@ -76,6 +83,8 @@ export const AnimationProvider = ({ children }) => {
     setAnimationDuration,
     currentTime,
     setCurrentTime,
+    seekToTime,
+    seekVersion,
     keyFrames,
     setKeyFrames,
     isPlaying,
