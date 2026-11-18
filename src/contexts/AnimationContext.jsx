@@ -12,7 +12,6 @@ export const useAnimation = () => {
 
 export const AnimationProvider = ({ children }) => {
   // Model & Scene state
-  const [selectedModelFile, setSelectedModelFile] = useState(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [isSceneReady, setIsSceneReady] = useState(false);
   const [bones, setBones] = useState([]);
@@ -30,6 +29,7 @@ export const AnimationProvider = ({ children }) => {
   const [seekVersion, setSeekVersion] = useState(0);
   const [keyFrames, setKeyFrames] = useState({});
   const [isPlaying, setIsPlaying] = useState(false);
+  const [interpolation, setInterpolation] = useState('step');
   
   // Refs
   const isGizmoDraggingRef = useRef(false);
@@ -42,6 +42,14 @@ export const AnimationProvider = ({ children }) => {
     setSeekVersion(version => version + 1);
   }, [animationDuration]);
 
+  const replaceTimeline = useCallback(clip => {
+    setAnimationName(clip.animationName || 'MyAnimation');
+    setAnimationDuration(clip.animationDuration);
+    setKeyFrames(clip.keyFrames);
+    setCurrentTime(0);
+    if (clip.interpolation) setInterpolation(clip.interpolation);
+  }, []);
+
   // Reset function for new model
   const resetAllStateForNewModel = useCallback(() => {
     setBones([]);
@@ -49,16 +57,13 @@ export const AnimationProvider = ({ children }) => {
     setBoneRotationUI({ x: 0, y: 0, z: 0 });
     setBonePositionUI({ x: 0, y: 0, z: 0 });
     setLivePose({});
-    setKeyFrames({});
-    setCurrentTime(0);
+    replaceTimeline({ animationDuration: 5, keyFrames: {} });
     setIsPlaying(false);
-  }, []);
+  }, [replaceTimeline]);
 
 
   const value = {
     // Model & Scene
-    selectedModelFile,
-    setSelectedModelFile,
     isLoadingModel,
     setIsLoadingModel,
     isSceneReady,
@@ -89,6 +94,9 @@ export const AnimationProvider = ({ children }) => {
     setKeyFrames,
     isPlaying,
     setIsPlaying,
+    interpolation,
+    setInterpolation,
+    replaceTimeline,
     
     // Refs
     isGizmoDraggingRef,

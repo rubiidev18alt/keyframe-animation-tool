@@ -15,6 +15,7 @@ export const useKeyframes = () => {
     isSceneReady,
     isPlaying,
     currentTime,
+    interpolation,
     boneRotationUI,
     keyFrames,
     setKeyFrames,
@@ -77,7 +78,8 @@ export const useKeyframes = () => {
         const interpolatedPose = sceneManagerRef.current.getPoseAtTimeForBone(
           otherBoneName,
           prevKeyFrames,
-          time
+          time,
+          interpolation
         );
 
         const angleDifference = getQuaternionAngleDifference(
@@ -115,7 +117,8 @@ export const useKeyframes = () => {
     selectedBoneName, 
     isSceneReady, 
     isPlaying, 
-    currentTime, 
+    currentTime,
+    interpolation,
     boneRotationUI, 
     setKeyFrames, 
     sceneManagerRef,

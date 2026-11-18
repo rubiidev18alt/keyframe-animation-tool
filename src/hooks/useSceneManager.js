@@ -2,15 +2,19 @@ import { useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import { Euler, Quaternion, MathUtils } from 'three';
 import { useAnimation } from '../contexts/AnimationContext';
 import SceneManager from '../core/SceneManager';
+import { findCompatibleClip } from '../utils/animationHelpers';
+import { loadLocalAsset } from '../utils/loadAsset';
+import { disposeModelResources } from '../utils/modelResources';
 
 export function useSceneManager(viewportRef) {
   const [sceneError, setSceneError] = useState('');
+  const [modelSource, setModelSource] = useState(null);
   const [viewportUnavailable, setViewportUnavailable] = useState(false);
   const {
     sceneManagerRef, isGizmoDraggingRef, setCurrentTime, setLivePose, isSceneReady,
-    selectedBoneName, isPlaying, bones, keyFrames, currentTime, seekVersion, livePose,
+    selectedBoneName, isPlaying, bones, keyFrames, currentTime, seekVersion, livePose, interpolation, isLoadingModel,
     setBoneRotationUI, setBonePositionUI, resetAllStateForNewModel, setIsLoadingModel,
-    setIsSceneReady, setBones, setSelectedBoneName,
+    setIsSceneReady, setBones, setSelectedBoneName, replaceTimeline,
   } = useAnimation();
 
   useEffect(() => {
@@ -41,43 +45,60 @@ export function useSceneManager(viewportRef) {
     };
   }, [viewportRef, sceneManagerRef, isGizmoDraggingRef, setCurrentTime, setLivePose, setSelectedBoneName]);
 
-  const handleLoadModel = useCallback(async (file) => {
+  const replaceModel = useCallback(async (name, readAsset) => {
     const manager = sceneManagerRef.current;
-    if (!manager || !file) return;
+    if (!manager) return false;
     setIsLoadingModel(true);
-    setIsSceneReady(false);
     setSceneError('');
-    resetAllStateForNewModel();
     try {
-      const initialPose = await manager.loadModel(file);
-      if (sceneManagerRef.current !== manager) return;
-      const bones = manager.getBones();
-      setBones(bones);
+      const asset = await readAsset();
+      if (sceneManagerRef.current !== manager) {
+        disposeModelResources(asset.model);
+        return false;
+      }
+      // Leave the existing rig and keys untouched if reading the new file fails.
+      const initialPose = manager.setModel(asset.model);
+      const nextBones = manager.getBones();
+      const clip = asset.format !== 'fbx' && nextBones.length
+        ? findCompatibleClip(asset.animations, nextBones, true)
+        : null;
+      resetAllStateForNewModel();
+      setModelSource({ name, id: asset.model.uuid });
+      setBones(nextBones);
       setLivePose(initialPose);
-      setSelectedBoneName(bones[0]?.name ?? null);
+      setSelectedBoneName(asset.selectedBoneName ?? Object.keys(clip?.keyFrames ?? {})[0] ?? nextBones[0]?.name ?? null);
+      if (clip) replaceTimeline(clip);
       setIsSceneReady(true);
+      return true;
     } catch (error) {
-      if (sceneManagerRef.current !== manager) return;
+      if (sceneManagerRef.current !== manager) return false;
       console.error('Failed to load the model:', error);
-      setSceneError('Could not read this FBX. Check the file and try again.');
+      setSceneError(`Could not load the model. ${error.message || 'Check the file and try again.'}`);
+      return false;
     } finally {
       if (sceneManagerRef.current === manager) setIsLoadingModel(false);
     }
-  }, [sceneManagerRef, resetAllStateForNewModel, setBones, setIsLoadingModel, setIsSceneReady, setLivePose, setSelectedBoneName]);
+  }, [sceneManagerRef, resetAllStateForNewModel, setBones, setIsLoadingModel, setIsSceneReady, setLivePose, setSelectedBoneName, replaceTimeline]);
+
+  const handleLoadModel = file => replaceModel(file.name, () => loadLocalAsset(file));
+  const handleLoadDemo = () => replaceModel('Demo: Relay R-07', async () => {
+    const { createDemoRig } = await import('../utils/demoRig');
+    return createDemoRig();
+  });
 
   useEffect(() => {
     const manager = sceneManagerRef.current;
     if (!manager) return;
-    manager.boneMarkersGroup.visible = !isPlaying && isSceneReady;
-    if (isSceneReady && selectedBoneName && !isPlaying) manager.attachGizmo(selectedBoneName);
+    manager.boneMarkersGroup.visible = !isPlaying && !isLoadingModel && isSceneReady;
+    if (isSceneReady && selectedBoneName && !isPlaying && !isLoadingModel) manager.attachGizmo(selectedBoneName);
     else manager.detachGizmo();
-  }, [selectedBoneName, isSceneReady, isPlaying, sceneManagerRef]);
+  }, [selectedBoneName, isSceneReady, isPlaying, isLoadingModel, sceneManagerRef]);
 
   useLayoutEffect(() => {
     const manager = sceneManagerRef.current;
     if (!isSceneReady || isPlaying || isGizmoDraggingRef.current || !manager) return;
-    setLivePose(Object.fromEntries(bones.map(({ name }) => [name, manager.getPoseAtTimeForBone(name, keyFrames, currentTime)])));
-  }, [currentTime, seekVersion, keyFrames, isSceneReady, isPlaying, bones, sceneManagerRef, isGizmoDraggingRef, setLivePose]);
+    setLivePose(Object.fromEntries(bones.map(({ name }) => [name, manager.getPoseAtTimeForBone(name, keyFrames, currentTime, interpolation)])));
+  }, [currentTime, seekVersion, keyFrames, isSceneReady, isPlaying, bones, interpolation, sceneManagerRef, isGizmoDraggingRef, setLivePose]);
 
   useLayoutEffect(() => {
     if (!isSceneReady || isPlaying) return;
@@ -90,5 +111,5 @@ export function useSceneManager(viewportRef) {
     setBoneRotationUI({ x: MathUtils.radToDeg(rotation.x), y: MathUtils.radToDeg(rotation.y), z: MathUtils.radToDeg(rotation.z) });
   }, [livePose, isSceneReady, isPlaying, selectedBoneName, sceneManagerRef, isGizmoDraggingRef, setBonePositionUI, setBoneRotationUI]);
 
-  return { handleLoadModel, sceneError, viewportUnavailable };
+  return { handleLoadModel, handleLoadDemo, modelSource, sceneError, viewportUnavailable };
 }

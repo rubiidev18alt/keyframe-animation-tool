@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { AnimationClip } from 'three';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { useAnimation } from '../contexts/AnimationContext';
-import { generateAnimationJson, parseAnimationClipToKATKeyframes } from '../utils/animationHelpers';
-import { createThreeAnimationTracks } from '../utils/steppedAnimation';
+import { generateAnimationJson, findCompatibleClip } from '../utils/animationHelpers';
+import { createThreeAnimationTracks } from '../utils/animationTracks';
 import { downloadAnimation } from '../utils/download';
+import { loadLocalAsset } from '../utils/loadAsset';
+import { disposeModelResources } from '../utils/modelResources';
 import { useKeyframes } from '../hooks/useKeyframes';
 import FilePicker from './FilePicker';
 import Icon from './Icon';
@@ -13,8 +14,7 @@ import Section from './Section';
 export default function ExportImportPanel({ onImportJson }) {
   const {
     animationName, animationDuration, keyFrames, isSceneReady, sceneManagerRef, isPlaying,
-    bones, setAnimationName, setAnimationDuration, setKeyFrames, setCurrentTime,
-    setIsLoadingModel, isLoadingModel,
+    bones, interpolation, replaceTimeline, setIsLoadingModel, isLoadingModel, isGizmoDraggingRef,
   } = useAnimation();
   const { totalKeyframeCount } = useKeyframes();
   const [exporting, setExporting] = useState(null);
@@ -24,7 +24,7 @@ export default function ExportImportPanel({ onImportJson }) {
   const canExport = canImport && totalKeyframeCount > 0 && !exporting;
 
   async function exportClip(format) {
-    if (!canExport) return;
+    if (!canExport || isGizmoDraggingRef.current) return;
     const manager = sceneManagerRef.current;
     const model = manager?.model;
     if (!model) return;
@@ -32,12 +32,12 @@ export default function ExportImportPanel({ onImportJson }) {
     setExporting(format);
     try {
       if (format === 'json') {
-        downloadAnimation(generateAnimationJson(animationName, animationDuration, keyFrames), animationName, 'json', 'application/json');
+        downloadAnimation(generateAnimationJson(animationName, animationDuration, keyFrames, interpolation), animationName, 'json', 'application/json');
       } else if (format === 'fbx') {
         const { exportAnimationFbx } = await import('../utils/exportFbx');
-        downloadAnimation(exportAnimationFbx(model, keyFrames, animationName, animationDuration), animationName, 'fbx');
+        downloadAnimation(exportAnimationFbx(model, keyFrames, animationName, animationDuration, interpolation), animationName, 'fbx');
       } else {
-        const tracks = createThreeAnimationTracks(keyFrames, manager, animationDuration);
+        const tracks = createThreeAnimationTracks(keyFrames, manager, animationDuration, interpolation);
         if (!tracks.length) throw new Error('No valid keyframes match the loaded rig.');
         const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
         const clip = new AnimationClip(animationName, animationDuration, tracks);
@@ -54,37 +54,24 @@ export default function ExportImportPanel({ onImportJson }) {
   }
 
   async function loadAnimation(file) {
-    if (!canImport) return;
+    if (!canImport || isGizmoDraggingRef.current) return;
     setImportStatus(null);
     setIsLoadingModel(true);
-    let objectUrl;
+    let asset;
     try {
-      const extension = file.name.split('.').pop().toLowerCase();
-      let asset;
-      if (extension === 'fbx') {
-        asset = new FBXLoader().parse(await file.arrayBuffer(), '');
-      } else if (extension === 'glb' || extension === 'gltf') {
-        const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
-        objectUrl = URL.createObjectURL(file);
-        asset = await new GLTFLoader().loadAsync(objectUrl);
-      } else throw new Error('Choose an FBX, GLB or GLTF animation file.');
+      asset = await loadLocalAsset(file);
+      if (!asset.animations?.length) throw new Error('No animations were found in this file.');
+      const imported = findCompatibleClip(asset.animations, bones, asset.format !== 'fbx');
+      if (!imported) throw new Error('No animation tracks match the loaded rig.');
 
-      const clip = asset.animations?.[0];
-      if (!clip) throw new Error('No animations were found in this file.');
-      const imported = parseAnimationClipToKATKeyframes(clip, bones);
-      if (!Object.keys(imported.keyFrames).length) throw new Error('No animation tracks match the loaded rig.');
-
-      setAnimationName(imported.animationName || file.name.replace(/\.[^.]+$/, ''));
-      setAnimationDuration(imported.animationDuration > 0 && Number.isFinite(imported.animationDuration) ? Number(imported.animationDuration.toFixed(4)) || imported.animationDuration : 5);
-      setKeyFrames(imported.keyFrames);
-      setCurrentTime(0);
+      replaceTimeline({ ...imported, animationName: imported.animationName || file.name.replace(/\.[^.]+$/, '') });
       const skippedCount = imported.skippedBones.length;
       setImportStatus({ message: skippedCount ? `Clip loaded. ${skippedCount} unmatched ${skippedCount === 1 ? 'bone' : 'bones'} skipped.` : 'Animation imported.' });
     } catch (error) {
       console.error('Animation import failed:', error);
       setImportStatus({ message: error.message, error: true });
     } finally {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (asset?.model) disposeModelResources(asset.model);
       setIsLoadingModel(false);
     }
   }

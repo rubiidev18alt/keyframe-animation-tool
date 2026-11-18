@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 
-export const generateAnimationJson = (animationName, animationDuration, keyFrames) => {
+export const generateAnimationJson = (animationName, animationDuration, keyFrames, interpolation = 'step') => {
   const animationClipData = {
     name: animationName,
     duration: animationDuration,
+    interpolation: interpolation === 'smooth' ? 'smooth' : 'step',
     tracks: [],
   };
   
@@ -112,6 +113,9 @@ export const validateImportedJson = (data) => {
     throw new Error("Invalid JSON: Missing or invalid 'duration' field");
   }
   
+  if (data.interpolation !== undefined && !['step', 'smooth'].includes(data.interpolation)) {
+    throw new Error("Invalid JSON: 'interpolation' must be 'step' or 'smooth'");
+  }
   if (!Array.isArray(data.tracks)) {
     throw new Error("Invalid JSON: Missing or invalid 'tracks' array");
   }
@@ -120,13 +124,14 @@ export const validateImportedJson = (data) => {
 };
 
 // Keep sparse translation and rotation channels independent. Filling in the
-// rest pose on an unrelated key would make a held channel jump back to rest.
+// rest pose on an unrelated key would make a keyed channel jump back to rest.
+const TRACK_TARGET = /^(.+)\.(position|quaternion)$/;
 export function parseImportedTracks(tracks, bones) {
   const boneNames = new Set(bones.map(bone => bone.name));
   const tracksByBone = new Map();
   const skippedBones = new Set();
   for (const track of tracks) {
-    const match = typeof track?.name === 'string' && track.name.match(/^(.+)\.(position|quaternion)$/);
+    const match = typeof track?.name === 'string' && track.name.match(TRACK_TARGET);
     if (!match) continue;
     const [, boneName, property] = match;
     if (!boneNames.has(boneName)) {
@@ -136,13 +141,17 @@ export function parseImportedTracks(tracks, bones) {
 
     const { times, values } = track;
     const components = property === 'quaternion' ? 4 : 3;
+    // A glTF cubic key is stored as [in-tangent, value, out-tangent]. The
+    // editor uses the authored values with its global pose interpolation.
+    const cubic = track.createInterpolant?.isInterpolantFactoryMethodGLTFCubicSpline;
+    const stride = cubic ? components * 3 : components;
     const isArray = value => Array.isArray(value) || ArrayBuffer.isView(value);
-    if (!isArray(times) || !isArray(values) || values.length !== times.length * components) continue;
+    if (!isArray(times) || !isArray(values) || values.length !== times.length * stride) continue;
 
     for (let i = 0; i < times.length; i++) {
       if (!Number.isFinite(times[i]) || times[i] < 0) continue;
       const time = Number(times[i].toFixed(4));
-      const offset = i * components;
+      const offset = i * stride + (cubic ? components : 0);
       const x = values[offset];
       const y = values[offset + 1];
       const z = values[offset + 2];
@@ -168,12 +177,30 @@ export function parseImportedTracks(tracks, bones) {
   };
 }
 
-export function parseAnimationClipToKATKeyframes(clip, bones) {
-  return {
+export function parseAnimationClipToKATKeyframes(clip, bones, inferInterpolation = false) {
+  const imported = parseImportedTracks(clip.tracks, bones);
+  const duration = clip.duration;
+  const result = {
     animationName: clip.name,
-    animationDuration: clip.duration,
-    ...parseImportedTracks(clip.tracks, bones),
+    animationDuration: Number.isFinite(duration) && duration > 0 ? Number(duration.toFixed(4)) || duration : 5,
+    ...imported,
   };
+  if (inferInterpolation) {
+    const hasSmoothTracks = clip.tracks.some(track => {
+      const target = track.name.match(TRACK_TARGET)?.[1];
+      return target && Object.hasOwn(imported.keyFrames, target) && track.getInterpolation() !== THREE.InterpolateDiscrete;
+    });
+    result.interpolation = hasSmoothTracks ? 'smooth' : 'step';
+  }
+  return result;
+}
+
+export function findCompatibleClip(animations, bones, inferInterpolation = false) {
+  for (const clip of animations ?? []) {
+    const imported = parseAnimationClipToKATKeyframes(clip, bones, inferInterpolation);
+    if (Object.keys(imported.keyFrames).length) return imported;
+  }
+  return null;
 }
 
 export const getQuaternionAngleDifference = (q1, q2) => {

@@ -1,21 +1,22 @@
 import { useState } from 'react';
 import { useAnimation } from '../contexts/AnimationContext';
-import { FRAME_RATE } from '../utils/steppedAnimation';
+import { FRAME_RATE } from '../utils/animationTracks';
 import Icon from './Icon';
 
 const TICKS = [0, 0.2, 0.4, 0.6, 0.8, 1];
 
-export default function Timeline({ playback }) {
+export default function Timeline({ playback, keyframeNavigation }) {
   const {
     animationDuration, currentTime, seekToTime, keyFrames, selectedBoneName, setSelectedBoneName,
-    isSceneReady, isPlaying, isLoadingModel, isGizmoDraggingRef,
+    isSceneReady, isPlaying, isLoadingModel, isGizmoDraggingRef, interpolation, bones,
   } = useAnimation();
   const [showAllTracks, setShowAllTracks] = useState(false);
-  const { canPlay, togglePlayback, stopPlayback } = playback;
+  const { canPlay, togglePlayback, stopPlayback, changeInterpolation } = playback;
+  const { canJumpBack, canJumpForward, jumpToKeyframe } = keyframeNavigation;
   const animatedBones = Object.keys(keyFrames).filter(name => keyFrames[name]?.length).sort((a, b) => a.localeCompare(b));
   const expanded = showAllTracks && animatedBones.length > 0;
   const visibleBones = expanded ? animatedBones : [selectedBoneName];
-  const canSeek = isSceneReady && !isPlaying && !isLoadingModel;
+  const canSeek = isSceneReady && bones.length > 0 && !isPlaying && !isLoadingModel;
 
   function seek(time, name) {
     if (!canSeek || isGizmoDraggingRef.current) return;
@@ -38,10 +39,12 @@ export default function Timeline({ playback }) {
       <div className="window-bar timeline-header">
         <h2 className="window-title"><Icon name="layers" /> Timeline <span className="window-id">/ 02</span></h2>
         <div className="timeline-transport" aria-label="Playback controls">
-          <button className="icon-button" title="Previous frame" aria-label="Previous frame" onClick={() => seek(Number(((frame - 1) / FRAME_RATE).toFixed(4)))} disabled={!canSeek}><Icon name="previous" /></button>
+          <button className="icon-button key-jump" title="Previous keyframe ([)" aria-label="Previous keyframe" onClick={() => jumpToKeyframe(-1)} disabled={!canJumpBack}><Icon name="previous" /></button>
+          <button className="icon-button" title="Previous frame (←)" aria-label="Previous frame" onClick={() => seek(Number(((frame - 1) / FRAME_RATE).toFixed(4)))} disabled={!canSeek}><Icon name="backFrame" /></button>
           <button className="icon-button transport-play" title={isPlaying ? 'Pause (Space)' : 'Play (Space)'} aria-label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlayback} disabled={!canPlay}><Icon name={isPlaying ? 'pause' : 'play'} /></button>
           <button className="icon-button" title="Stop and rewind" aria-label="Stop" onClick={stopPlayback} disabled={!isPlaying}><Icon name="stop" /></button>
-          <button className="icon-button" title="Next frame" aria-label="Next frame" onClick={() => seek(Number(((frame + 1) / FRAME_RATE).toFixed(4)))} disabled={!canSeek}><Icon name="next" /></button>
+          <button className="icon-button" title="Next frame (→)" aria-label="Next frame" onClick={() => seek(Number(((frame + 1) / FRAME_RATE).toFixed(4)))} disabled={!canSeek}><Icon name="forwardFrame" /></button>
+          <button className="icon-button key-jump" title="Next keyframe (])" aria-label="Next keyframe" onClick={() => jumpToKeyframe(1)} disabled={!canJumpForward}><Icon name="next" /></button>
         </div>
         <div className="timeline-readout">FRAME <strong>{String(frame).padStart(3, '0')}</strong> <span>/ {String(frameCount).padStart(3, '0')}</span></div>
       </div>
@@ -71,7 +74,7 @@ export default function Timeline({ playback }) {
               <div className="track-inset">
                 <div className="track-grid" onClick={seekFromClick}>
                   <span className="timeline-playhead" aria-hidden="true" />
-                  {!track.length && <span className="track-empty">{isSceneReady ? 'No keys on this track' : 'Load a rig to begin'}</span>}
+                  {!track.length && <span className="track-empty">{name ? 'No keys on this track' : isSceneReady ? 'No skeleton to animate' : 'Load a rig to begin'}</span>}
                   {track.filter(key => key.time >= 0 && key.time <= animationDuration).map(key => (
                     <button
                       key={key.time}
@@ -89,7 +92,10 @@ export default function Timeline({ playback }) {
           })}
         </div>
         <div className="track-layout timeline-scrubber">
-          <span className="timeline-mode" title="Each pose holds until the next keyframe"><i /> Stepped</span>
+          <div className="timeline-mode" role="group" aria-label="Pose interpolation">
+            <button className="mode-choice" aria-pressed={interpolation === 'step'} title="Step: hold each pose until the next key" onClick={() => changeInterpolation('step')} disabled={isLoadingModel}>Step</button>
+            <button className="mode-choice" aria-pressed={interpolation === 'smooth'} title="Smooth: interpolate between keyframes" onClick={() => changeInterpolation('smooth')} disabled={isLoadingModel}>Smooth</button>
+          </div>
           <input className="timeline-slider" type="range" aria-label="Scrub timeline" min="0" max={animationDuration} step="0.0001" value={currentTime} onChange={event => seek(event.target.valueAsNumber)} disabled={!canSeek} />
         </div>
       </div>

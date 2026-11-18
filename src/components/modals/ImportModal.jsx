@@ -6,7 +6,7 @@ import Dialog from './Dialog';
 export default function ImportModal({ onClose }) {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
-  const { bones, setAnimationName, setAnimationDuration, setKeyFrames, setCurrentTime } = useAnimation();
+  const { bones, replaceTimeline } = useAnimation();
 
   function importJson() {
     try {
@@ -14,10 +14,12 @@ export default function ImportModal({ onClose }) {
       validateImportedJson(data);
       const { keyFrames } = parseImportedTracks(data.tracks, bones);
       if (!Object.keys(keyFrames).length) throw new Error('No keyframes match the loaded rig.');
-      setAnimationName(data.name);
-      setAnimationDuration(data.duration);
-      setKeyFrames(keyFrames);
-      setCurrentTime(0);
+      replaceTimeline({
+        animationName: data.name,
+        animationDuration: data.duration,
+        keyFrames,
+        interpolation: data.interpolation ?? 'step',
+      });
       onClose();
     } catch (error) {
       setError(error.message);

@@ -6,6 +6,7 @@ const shortcuts = [
   ['S or K', 'Set or update keyframe'],
   ['Delete / Backspace', 'Delete current keyframe'],
   ['← / →', 'Previous / next frame'],
+  ['[ / ]', 'Previous / next keyframe on the selected bone'],
   ['Shift + ← / →', 'Jump by 0.1 seconds'],
   ['Home / End', 'Start / end of timeline'],
 ];
@@ -16,10 +17,10 @@ export default function InfoModal({ onClose }) {
       <p>Keyframe Animation Tool runs in your browser. Model and animation files are not uploaded.</p>
       <h3>Quick start</h3>
       <ol>
-        <li>In <strong>Scene</strong>, choose or drop an FBX model with a skeleton.</li>
+        <li>In <strong>Scene</strong>, choose an FBX or GLB model with a skeleton, or load the built-in demo rig.</li>
         <li>Open <strong>Animate</strong>, choose a bone, and rotate it with the gizmo or the local rotation fields.</li>
         <li>Set a key. Move the playhead, change the pose, and set another key.</li>
-        <li>Click a key to snap to its pose. During playback, each pose holds until the next key.</li>
+        <li>Click a key to snap to its pose. Choose <strong>Step</strong> to hold poses or <strong>Smooth</strong> to interpolate between keys. The mode also applies to exports.</li>
       </ol>
       <h3>Export formats</h3>
       <ul>

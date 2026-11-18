@@ -1,10 +1,12 @@
 import { Euler, Quaternion, MathUtils } from 'three';
 import { FbxBinaryWriter, FbxNode } from 'three-js-fbx-exporter';
-import { getClipChannels } from './steppedAnimation.js';
+import { getClipChannels } from './animationTracks.js';
 
 const FBX_VERSION = 7400;
 const TICKS_PER_SECOND = 46186158000;
 const CONSTANT_STANDARD = 0x02; // Hold this key, not the next key (0x102).
+const LINEAR = 0x04;
+const MAX_ROTATION_STEP = Math.PI / 24;
 // FBX Euler XYZ applies rotations extrinsically, i.e. Three's intrinsic ZYX.
 const EULER_ORDER = 'ZYX';
 const toTicks = seconds => BigInt(Math.round(seconds * TICKS_PER_SECOND));
@@ -17,30 +19,72 @@ function translationValues(position) {
   return [position.x, position.y, position.z];
 }
 
-function eulerValues(rotation) {
-  const quaternion = new Quaternion(rotation.x, rotation.y, rotation.z, rotation.w).normalize();
-  const { x, y, z } = new Euler().setFromQuaternion(quaternion, EULER_ORDER);
-  return [x, y, z].map(MathUtils.radToDeg);
+const toQuaternion = ({ x, y, z, w }) => new Quaternion(x, y, z, w).normalize();
+
+function eulerValues(rotation, previous) {
+  const { x, y, z } = new Euler().setFromQuaternion(rotation, EULER_ORDER);
+  const degrees = [x, y, z].map(MathUtils.radToDeg);
+  if (!previous) return degrees;
+
+  // Choose the equivalent Euler representation nearest the previous sample.
+  // The second solution avoids large flips at the ±90° pitch boundary.
+  const unwrap = values => values.map((angle, i) => angle + 360 * Math.round((previous[i] - angle) / 360));
+  const distance = values => values.reduce((total, angle, i) => total + (previous[i] - angle) ** 2, 0);
+  const primary = unwrap(degrees);
+  const alternate = unwrap([degrees[0] + 180, 180 - degrees[1], degrees[2] + 180]);
+  return distance(alternate) < distance(primary) ? alternate : primary;
+}
+
+function curveSamples(keys, rotation, smooth) {
+  const samples = new Map();
+  let previousAngles;
+  let previousRotation;
+  let previousTime;
+  const addRotation = (time, quaternion) => {
+    previousAngles = eulerValues(quaternion, previousAngles);
+    samples.set(toTicks(time), previousAngles);
+  };
+  for (const { time, value } of keys) {
+    if (!rotation) {
+      samples.set(toTicks(time), translationValues(value));
+      continue;
+    }
+    const quaternion = toQuaternion(value);
+    if (smooth && previousRotation) {
+      // FBX stores Euler curves instead of quaternion tracks. Subdivide by
+      // angle so linear curves approximate the viewport's spherical rotation.
+      const steps = Math.ceil(previousRotation.angleTo(quaternion) / MAX_ROTATION_STEP);
+      for (let i = 1; i < steps; i++) {
+        const fraction = i / steps;
+        addRotation(MathUtils.lerp(previousTime, time, fraction), previousRotation.clone().slerp(quaternion, fraction));
+      }
+    }
+    addRotation(time, quaternion);
+    previousRotation = quaternion;
+    previousTime = time;
+  }
+  return { times: [...samples.keys()], values: [...samples.values()] };
 }
 
 function addTransform(properties, name, values) {
   property(properties, name, name, values.map(value => typed('float64', value)), '', 'A');
 }
 
-function addCurve(objects, id, times, values) {
+function addCurve(objects, id, times, values, flags) {
   const curve = objects.add('AnimationCurve', [id, named('', 'AnimCurve'), '']);
   curve.add('Default', [typed('float64', values[0])]);
   curve.add('KeyVer', [4008]);
   curve.add('KeyTime', [typed('int64Array', times)]);
   curve.add('KeyValueFloat', [typed('float32Array', values)]);
-  curve.add('KeyAttrFlags', [typed('int32Array', [CONSTANT_STANDARD])]);
+  curve.add('KeyAttrFlags', [typed('int32Array', [flags])]);
   curve.add('KeyAttrDataFloat', [typed('float32Array', [0, 0, 0, 0])]);
   curve.add('KeyAttrRefCount', [typed('int32Array', [times.length])]);
 }
 
 /** Write a binary FBX take with the source skeleton (no meshes or textures). */
-export function exportAnimationFbx(model, keyFrames, name, duration) {
-  if (!model) throw new Error('Load an FBX rig first.');
+export function exportAnimationFbx(model, keyFrames, name, duration, interpolation = 'step') {
+  if (!model) throw new Error('Load a rigged model first.');
+  const smooth = interpolation === 'smooth';
   if (!Number.isFinite(duration) || duration <= 0 || !Number.isSafeInteger(Math.round(duration * TICKS_PER_SECOND))) {
     throw new Error('The animation duration is outside the supported FBX range.');
   }
@@ -105,7 +149,7 @@ export function exportAnimationFbx(model, keyFrames, name, duration) {
     fbxModel.add('Version', [232]);
     const transform = fbxModel.add('Properties70');
     addTransform(transform, 'Lcl Translation', translationValues(node.userData.initialLocalPosition ?? node.position));
-    addTransform(transform, 'Lcl Rotation', eulerValues(node.userData.initialLocalQuaternion ?? node.quaternion));
+    addTransform(transform, 'Lcl Rotation', eulerValues(toQuaternion(node.userData.initialLocalQuaternion ?? node.quaternion)));
     addTransform(transform, 'Lcl Scaling', translationValues(node.scale));
     property(transform, 'RotationOrder', 'enum', [0]);
     property(transform, 'InheritType', 'enum', [1]); // Match Three.js parent * local transforms.
@@ -118,27 +162,20 @@ export function exportAnimationFbx(model, keyFrames, name, duration) {
     connect(attributeId, id);
 
     const track = Object.hasOwn(keyFrames, node.name) ? keyFrames[node.name] : null;
-    for (const { binding, keys } of getClipChannels(track, duration)) {
+    for (const { binding, keys } of getClipChannels(track, duration, interpolation)) {
       const rotation = binding === 'quaternion';
       const curveNodeId = nextId++;
       const curveNode = objects.add('AnimationCurveNode', [curveNodeId, named(rotation ? 'R' : 'T', 'AnimCurveNode'), '']);
       connect(curveNodeId, layerId);
       connect(curveNodeId, id, rotation ? 'Lcl Rotation' : 'Lcl Translation');
       const props = curveNode.add('Properties70');
-      const times = keys.map(key => toTicks(key.time));
-      const values = keys.map(key => rotation ? eulerValues(key.value) : translationValues(key.value));
+      const { times, values } = curveSamples(keys, rotation, smooth);
       ['X', 'Y', 'Z'].forEach((axis, i) => {
         const axisValues = values.map(tuple => tuple[i]);
-        if (rotation) {
-          for (let key = 1; key < axisValues.length; key++) {
-            // Keep Euler angles on the nearest revolution across the ±180° seam.
-            axisValues[key] += 360 * Math.round((axisValues[key - 1] - axisValues[key]) / 360);
-          }
-        }
         const channel = `d|${axis}`;
         property(props, channel, 'Number', [typed('float64', axisValues[0])], '', 'A');
         const curveId = nextId++;
-        addCurve(objects, curveId, times, axisValues);
+        addCurve(objects, curveId, times, axisValues, smooth ? LINEAR : CONSTANT_STANDARD);
         connect(curveId, curveNodeId, channel);
         curveCount++;
       });

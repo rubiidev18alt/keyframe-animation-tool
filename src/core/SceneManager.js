@@ -1,8 +1,8 @@
 import * as GlobalTHREE from 'three'; 
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { createThreeAnimationTracks, sampleSteppedPose } from '../utils/steppedAnimation.js';
+import { createThreeAnimationTracks, samplePoseAtTime } from '../utils/animationTracks.js';
+import { disposeModelResources } from '../utils/modelResources.js';
 
 const TARGET_MODEL_MAX_DIMENSION = 150; // Used to normalize model size on import
 
@@ -245,16 +245,7 @@ class SceneManager {
         this.stopAnimation();
         if (this.model) {
             this.modelStage.remove(this.model);
-            this.model.traverse(child => {
-                if (child.isMesh) {
-                    child.geometry?.dispose();
-                    if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m?.dispose());
-                    } else {
-                        child.material?.dispose();
-                    }
-                }
-            });
+            disposeModelResources(this.model);
             this.model = null;
         }
         if (this.skeletonHelper && this.scene) { 
@@ -276,11 +267,9 @@ class SceneManager {
         }
     }
 
-    async loadModel(file) {
+    setModel(object) {
+        if (!this.scene || !object?.isObject3D) throw new Error('No usable 3D scene was found.');
         this.clearModel();
-        const buffer = await file.arrayBuffer();
-        if (!this.scene) throw new Error('The viewport is unavailable.');
-        const object = new FBXLoader().parse(buffer, '');
         this.model = object;
         this.modelStage.add(object);
         this.modelStage.updateMatrixWorld(true);
@@ -308,7 +297,7 @@ class SceneManager {
 
         const box = new GlobalTHREE.Box3().setFromObject(object);
         if (box.isEmpty()) {
-            // A skeleton-only FBX (including our export) has no mesh bounds.
+            // A skeleton-only file (including our FBX export) has no mesh bounds.
             for (const { bone } of this.bones) box.expandByPoint(bone.getWorldPosition(new GlobalTHREE.Vector3()));
         }
         const size = box.getSize(new GlobalTHREE.Vector3());
@@ -324,7 +313,12 @@ class SceneManager {
         this.scene.add(this.skeletonHelper);
         this.mixer = new GlobalTHREE.AnimationMixer(object);
         this.controls.target.set(0, size.y * scale / 2, 0);
-        this.camera.position.copy(this.controls.target).add(new GlobalTHREE.Vector3(185, 135, 235));
+        const vertical = GlobalTHREE.MathUtils.degToRad(this.camera.fov / 2);
+        const horizontal = Math.atan(Math.tan(vertical) * Math.max(0.55, this.camera.aspect));
+        const radius = Math.max(40, size.length() * scale / 2);
+        const distance = radius * 1.35 / Math.sin(Math.min(vertical, horizontal));
+        const offset = new GlobalTHREE.Vector3(1, 0.55, 1.6).setLength(distance);
+        this.camera.position.copy(this.controls.target).add(offset);
         this.controls.update();
         return initialBoneData;
     }
@@ -404,15 +398,15 @@ class SceneManager {
 
     setOnBoneTransformChangeByGizmo(callback) { this.onBoneTransformChangeByGizmoCallback = callback; }
 
-    playAnimationFromData(keyFramesData, duration, startTime) {
+    playAnimationFromData(keyFramesData, duration, startTime, interpolation) {
         if (!this.model || !this.mixer) return false;
-        const tracks = createThreeAnimationTracks(keyFramesData, this, duration);
+        const tracks = createThreeAnimationTracks(keyFramesData, this, duration, interpolation);
         if (!tracks.length) return false;
         this.stopAnimation();
         this.detachGizmo();
         const time = startTime < duration ? startTime : 0;
         this.applyPoseFromData(Object.fromEntries(
-            this.bones.map(({ name }) => [name, this.getPoseAtTimeForBone(name, keyFramesData, time)]),
+            this.bones.map(({ name }) => [name, this.getPoseAtTimeForBone(name, keyFramesData, time, interpolation)]),
         ));
         const clip = new GlobalTHREE.AnimationClip('Timeline', duration, tracks);
         this.activeAction = this.mixer.clipAction(clip);
@@ -421,6 +415,8 @@ class SceneManager {
         this.clock.start();
         return true;
     }
+
+    getPlaybackTime() { return this.activeAction?.time; }
 
     stopAnimation() {
         if (!this.activeAction) return;
@@ -431,12 +427,12 @@ class SceneManager {
 
     setOnTimeUpdate(callback) { this.onTimeUpdateCallback = callback; }
 
-    getPoseAtTimeForBone(boneName, keyFramesData, time) {
+    getPoseAtTimeForBone(boneName, keyFramesData, time, interpolation) {
         const data = this.getBoneByName(boneName)?.userData;
-        return sampleSteppedPose(Object.hasOwn(keyFramesData, boneName) ? keyFramesData[boneName] : [], time, {
+        return samplePoseAtTime(Object.hasOwn(keyFramesData, boneName) ? keyFramesData[boneName] : [], time, {
             position: data?.initialLocalPosition ?? { x: 0, y: 0, z: 0 },
             quaternion: data?.initialLocalQuaternion ?? { x: 0, y: 0, z: 0, w: 1 },
-        });
+        }, interpolation);
     }
 
     animate() {

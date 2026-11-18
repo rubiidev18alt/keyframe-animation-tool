@@ -6,11 +6,11 @@ import { useKeyframes } from '../../hooks/useKeyframes';
 import Dialog from './Dialog';
 
 export default function JsonModal({ onClose }) {
-  const { animationName, animationDuration, keyFrames } = useAnimation();
+  const { animationName, animationDuration, keyFrames, interpolation } = useAnimation();
   const { totalKeyframeCount } = useKeyframes();
   const [status, setStatus] = useState('');
   const outputRef = useRef(null);
-  const text = totalKeyframeCount ? generateAnimationJson(animationName, animationDuration, keyFrames) : '// No keyframes have been set.';
+  const text = totalKeyframeCount ? generateAnimationJson(animationName, animationDuration, keyFrames, interpolation) : '// No keyframes have been set.';
 
   async function copyJson() {
     try {

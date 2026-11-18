@@ -3,7 +3,8 @@ import { AnimationProvider, useAnimation } from './contexts/AnimationContext';
 import { useSceneManager } from './hooks/useSceneManager';
 import { useKeyframes } from './hooks/useKeyframes';
 import { usePlayback } from './hooks/usePlayback';
-import { FRAME_RATE } from './utils/steppedAnimation';
+import { useKeyframeNavigation } from './hooks/useKeyframeNavigation';
+import { FRAME_RATE } from './utils/animationTracks';
 import Timeline from './components/Timeline';
 import BoneList from './components/BoneList';
 import TransformPanel from './components/TransformPanel';
@@ -21,30 +22,30 @@ function AppContent() {
   const viewportRef = useRef(null);
   const [activeTab, setActiveTab] = useState('scene');
   const [dialog, setDialog] = useState(null);
-  const [modelInputError, setModelInputError] = useState('');
   const {
-    selectedModelFile, setSelectedModelFile, isLoadingModel, isSceneReady, isPlaying, animationName,
+    isLoadingModel, isSceneReady, isPlaying, animationName, interpolation,
     setAnimationName, animationDuration, setAnimationDuration, currentTime, setCurrentTime, seekToTime,
     bones, isGizmoDraggingRef,
   } = useAnimation();
-  const { handleLoadModel, sceneError, viewportUnavailable } = useSceneManager(viewportRef);
+  const { handleLoadModel, handleLoadDemo, modelSource, sceneError, viewportUnavailable } = useSceneManager(viewportRef);
   const { setKeyframeFromUI, deleteKeyframeAtCurrentTime, totalKeyframeCount } = useKeyframes();
   const playback = usePlayback();
   const { togglePlayback } = playback;
+  const keyframeNavigation = useKeyframeNavigation();
+  const { jumpToKeyframe } = keyframeNavigation;
 
   const animateEnabled = isSceneReady && bones.length > 0;
   const modelInputDisabled = isPlaying || isLoadingModel || viewportUnavailable;
-  const editingDisabled = !isSceneReady || isLoadingModel || isPlaying;
+  const editingDisabled = !animateEnabled || isLoadingModel || isPlaying;
 
   function loadModel(file) {
-    if (!/\.fbx$/i.test(file.name)) {
-      setModelInputError('Choose a file with the .fbx extension.');
-      return;
-    }
+    if (!modelInputDisabled && !isGizmoDraggingRef.current) handleLoadModel(file);
+  }
+
+  async function loadDemo() {
     if (modelInputDisabled || isGizmoDraggingRef.current) return;
-    setModelInputError('');
-    setSelectedModelFile(file);
-    handleLoadModel(file);
+    if (totalKeyframeCount && !window.confirm('Replace the current model and its keyframes with the demo rig?')) return;
+    if (await handleLoadDemo()) setActiveTab('animate');
   }
 
   useEffect(() => {
@@ -59,7 +60,7 @@ function AppContent() {
 
   useEffect(() => {
     const handleKeyDown = event => {
-      if (dialog || !isSceneReady || isLoadingModel || isGizmoDraggingRef.current || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (dialog || !animateEnabled || isLoadingModel || isGizmoDraggingRef.current || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
       if (event.key === ' ') {
         if (event.target instanceof Element && event.target.closest('button:focus-visible, a:focus-visible')) return;
@@ -72,6 +73,7 @@ function AppContent() {
       const key = event.key.toLowerCase();
       if (key === 's' || key === 'k') setKeyframeFromUI();
       else if (key === 'delete' || key === 'backspace') deleteKeyframeAtCurrentTime();
+      else if (key === '[' || key === ']') jumpToKeyframe(key === '[' ? -1 : 1);
       else if (key === 'home') seekToTime(0);
       else if (key === 'end') seekToTime(animationDuration);
       else if (key === 'arrowleft' || key === 'arrowright') {
@@ -83,7 +85,7 @@ function AppContent() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [dialog, isSceneReady, isPlaying, isLoadingModel, isGizmoDraggingRef, currentTime, animationDuration, seekToTime, togglePlayback, setKeyframeFromUI, deleteKeyframeAtCurrentTime]);
+  }, [dialog, animateEnabled, isPlaying, isLoadingModel, isGizmoDraggingRef, currentTime, animationDuration, seekToTime, togglePlayback, jumpToKeyframe, setKeyframeFromUI, deleteKeyframeAtCurrentTime]);
 
   return (
     <div className="app-container">
@@ -118,13 +120,16 @@ function AppContent() {
             <Section index="01" title="Model source">
               <FilePicker
                 id="model-file-input"
-                accept=".fbx"
-                title={selectedModelFile?.name ?? 'Choose FBX model'}
-                hint={isSceneReady ? 'Click or drop to replace' : 'Browse or drop a rig here'}
+                accept=".fbx,.glb,.gltf"
+                title={modelSource?.name ?? 'Import model'}
+                hint={isSceneReady ? 'Replace FBX, GLB or GLTF' : 'Drop FBX, GLB or GLTF here'}
                 onFile={loadModel}
                 disabled={modelInputDisabled}
               />
-              {modelInputError && <p className="panel-message error" role="alert">{modelInputError}</p>}
+              <button className="button secondary wide" onClick={loadDemo} disabled={modelInputDisabled} title="Try the built-in Relay R-07 rig">
+                <Icon name="robot" /> Load demo rig <span className="button-format">R-07</span>
+              </button>
+              {isSceneReady && !animateEnabled && <p className="section-hint">No skeleton found. Load a rigged model to keyframe bones.</p>}
             </Section>
 
             <Section index="02" title="Animation setup">
@@ -145,11 +150,11 @@ function AppContent() {
                 </div>
               </div>
             </Section>
-            <ExportImportPanel onImportJson={() => setDialog('import')} />
+            <ExportImportPanel key={modelSource?.id} onImportJson={() => setDialog('import')} />
           </div>
 
           <div className="tab-content" hidden={activeTab === 'scene' || !animateEnabled}>
-            <BoneList />
+            <BoneList active={activeTab === 'animate' && animateEnabled} />
             <TransformPanel />
           </div>
           <div className="project-footer"><span>CLIP DATA</span><span>{totalKeyframeCount} {totalKeyframeCount === 1 ? 'KEYFRAME' : 'KEYFRAMES'}</span></div>
@@ -161,15 +166,16 @@ function AppContent() {
             sceneError={sceneError}
             viewportUnavailable={viewportUnavailable}
             onClickPickModel={() => document.getElementById('model-file-input').click()}
+            onLoadDemo={loadDemo}
           />
-          <Timeline playback={playback} />
+          <Timeline key={modelSource?.id} playback={playback} keyframeNavigation={keyframeNavigation} />
         </main>
       </div>
 
       <footer className="status-bar">
-        <span className="system-status"><i className={`signal ${sceneError ? 'fault' : 'online'}`} />{isLoadingModel ? 'Reading file' : sceneError ? 'Check viewport' : isPlaying ? 'Playing clip' : isSceneReady ? 'Rig ready' : 'Ready'}</span>
+        <span className="system-status"><i className={`signal ${sceneError ? 'fault' : 'online'}`} />{isLoadingModel ? 'Reading file' : sceneError ? 'Check viewport' : isPlaying ? 'Playing clip' : animateEnabled ? 'Rig ready' : isSceneReady ? 'Model ready' : 'Ready'}</span>
         <span className="privacy-status">Your files stay on this device</span>
-        <span className="fps-status">{FRAME_RATE} FPS <b>//</b> STEP</span>
+        <span className="fps-status">{FRAME_RATE} FPS <b>//</b> {interpolation}</span>
       </footer>
 
       {dialog === 'json' && <JsonModal onClose={() => setDialog(null)} />}

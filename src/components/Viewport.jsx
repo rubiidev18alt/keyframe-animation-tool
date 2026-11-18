@@ -14,7 +14,7 @@ function RigSchematic() {
   );
 }
 
-export default function Viewport({ viewportRef, sceneError, viewportUnavailable, onClickPickModel }) {
+export default function Viewport({ viewportRef, sceneError, viewportUnavailable, onClickPickModel, onLoadDemo }) {
   const { currentTime, animationDuration, seekToTime, isLoadingModel, isSceneReady, isPlaying, bones } = useAnimation();
   return (
     <section className="viewport-panel" aria-label="3D viewport">
@@ -31,7 +31,7 @@ export default function Viewport({ viewportRef, sceneError, viewportUnavailable,
             step="0.0001"
             value={currentTime}
             onChange={event => seekToTime(event.target.valueAsNumber)}
-            disabled={!isSceneReady || isPlaying || isLoadingModel}
+            disabled={!isSceneReady || !bones.length || isPlaying || isLoadingModel}
           />
           <span className="time-duration">/ {animationDuration.toFixed(2)} s</span>
         </div>
@@ -48,15 +48,17 @@ export default function Viewport({ viewportRef, sceneError, viewportUnavailable,
               <RigSchematic />
               <span className="viewport-kicker">{sceneError ? 'INPUT ERROR' : isLoadingModel ? 'READING FILE' : 'AWAITING INPUT'}</span>
               <h3>{isLoadingModel ? 'Loading scene…' : sceneError ? 'Scene unavailable' : 'No model loaded'}</h3>
-              <p role={sceneError ? 'alert' : undefined}>{sceneError || 'Load an FBX rig to pose bones and start keyframing.'}</p>
+              <p role={sceneError ? 'alert' : undefined}>{sceneError || 'Open an FBX or GLB model, or try a rig with a clip already on the timeline.'}</p>
               {!isLoadingModel && !viewportUnavailable && (
-                <button className="button primary empty-action" onClick={onClickPickModel}>
-                  <Icon name="upload" /> Choose FBX model
-                </button>
+                <div className="viewport-actions">
+                  <button className="button primary" onClick={onClickPickModel}><Icon name="upload" /> Choose model</button>
+                  <button className="button secondary" onClick={onLoadDemo}><Icon name="robot" /> Try demo</button>
+                </div>
               )}
             </div>
           </div>
         )}
+        {isSceneReady && sceneError && <p className="viewport-error" role="alert">{sceneError}</p>}
         <svg className="viewport-axes" viewBox="0 0 64 53" fill="none" aria-label="Axis color legend" role="img">
           <path d="M25 32V12" stroke="#83dab8" />
           <path d="m25 32 19 8" stroke="#ef947c" />
@@ -68,8 +70,10 @@ export default function Viewport({ viewportRef, sceneError, viewportUnavailable,
         </svg>
       </div>
       <div className="viewport-footer">
-        <span className="viewport-state"><i className={`signal${isSceneReady ? ' online' : ''}`} />{isSceneReady ? `${bones.length} ${bones.length === 1 ? 'bone' : 'bones'}` : 'No rig'}</span>
-        <span className="viewport-guide"><kbd>DRAG</kbd> Orbit <kbd>SHIFT+DRAG</kbd> Pan <kbd>SCROLL</kbd> Zoom</span>
+        <span className="viewport-state"><i className={`signal${isSceneReady ? ' online' : ''}`} />{isSceneReady ? bones.length ? `${bones.length} ${bones.length === 1 ? 'bone' : 'bones'}` : 'Static model' : 'No rig'}</span>
+        <span className="viewport-guide">
+          <span><kbd>DRAG</kbd> Orbit</span><span><kbd>SHIFT+DRAG</kbd> Pan</span><span><kbd>SCROLL</kbd> Zoom</span>
+        </span>
       </div>
     </section>
   );
