@@ -15,6 +15,7 @@ export const useKeyframes = () => {
     isSceneReady,
     isPlaying,
     currentTime,
+    interpolation,
     boneRotationUI,
     keyFrames,
     setKeyFrames,
@@ -24,12 +25,12 @@ export const useKeyframes = () => {
   } = useAnimation();
 
   const hasKeyframeAtCurrentTime = useMemo(() => {
-    if (!selectedBoneName || !keyFrames[selectedBoneName]) return false;
+    if (!selectedBoneName || !Object.hasOwn(keyFrames, selectedBoneName)) return false;
     return !!findKeyframeAtTime(keyFrames[selectedBoneName], currentTime);
   }, [selectedBoneName, keyFrames, currentTime]);
 
   const selectedBoneKeyframeCount = useMemo(() => {
-    if (!selectedBoneName || !keyFrames[selectedBoneName]) return 0;
+    if (!selectedBoneName || !Object.hasOwn(keyFrames, selectedBoneName)) return 0;
     return keyFrames[selectedBoneName].length;
   }, [selectedBoneName, keyFrames]);
 
@@ -46,9 +47,9 @@ export const useKeyframes = () => {
     const rotationThreshold = 0.001; // Radians, approx 0.05 degrees.
 
     setKeyFrames(prevKeyFrames => {
-      const newKeyFramesData = { ...prevKeyFrames };
+      const newKeyFramesData = { __proto__: null, ...prevKeyFrames };
 
-      const selectedBoneRotation = eulerToQuaternion(boneRotationUI);
+      const selectedBoneRotation = livePose[selectedBoneName]?.quaternion ?? eulerToQuaternion(boneRotationUI);
       let selectedBonePosition;
       const selectedBoneSceneObject = sceneManagerRef.current.getBoneByName(selectedBoneName);
 
@@ -74,10 +75,11 @@ export const useKeyframes = () => {
             return;
         }
         
-        const interpolatedPose = sceneManagerRef.current.interpolatePoseAtTimeForBone(
+        const interpolatedPose = sceneManagerRef.current.getPoseAtTimeForBone(
           otherBoneName,
           prevKeyFrames,
-          time
+          time,
+          interpolation
         );
 
         const angleDifference = getQuaternionAngleDifference(
@@ -115,7 +117,8 @@ export const useKeyframes = () => {
     selectedBoneName, 
     isSceneReady, 
     isPlaying, 
-    currentTime, 
+    currentTime,
+    interpolation,
     boneRotationUI, 
     setKeyFrames, 
     sceneManagerRef,
@@ -129,7 +132,7 @@ export const useKeyframes = () => {
     const time = parseFloat(currentTime.toFixed(4));
     
     setKeyFrames(prev => {
-      if (!prev[selectedBoneName]) return prev;
+      if (!Object.hasOwn(prev, selectedBoneName)) return prev;
       
       const updatedTrack = removeKeyframeAtTime(prev[selectedBoneName], time);
       

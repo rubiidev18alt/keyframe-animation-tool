@@ -1,0 +1,43 @@
+name: Publish offline release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check the release tag
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build:local
+      - name: Publish standalone HTML
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -s build/local/index.html
+          test "$(find build/local -type f | wc -l)" -eq 1
+          asset="build/keyframe-animation-tool-$GITHUB_REF_NAME.html"
+          mv build/local/index.html "$asset"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$asset#Standalone HTML (offline)" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$asset#Standalone HTML (offline)" \
+              --verify-tag --title "Keyframe Animation Tool $GITHUB_REF_NAME" \
+              --generate-notes --notes 'Download the standalone HTML asset and open it in a current browser with WebGL support. It runs offline, with no installation or local server.'
+          fi

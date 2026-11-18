@@ -1,5 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import * as THREE from 'three';
+import { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 const AnimationContext = createContext();
 
@@ -13,7 +12,6 @@ export const useAnimation = () => {
 
 export const AnimationProvider = ({ children }) => {
   // Model & Scene state
-  const [selectedModelFile, setSelectedModelFile] = useState(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [isSceneReady, setIsSceneReady] = useState(false);
   const [bones, setBones] = useState([]);
@@ -28,12 +26,29 @@ export const AnimationProvider = ({ children }) => {
   const [animationName, setAnimationName] = useState('MyAnimation');
   const [animationDuration, setAnimationDuration] = useState(5);
   const [currentTime, setCurrentTime] = useState(0);
+  const [seekVersion, setSeekVersion] = useState(0);
   const [keyFrames, setKeyFrames] = useState({});
   const [isPlaying, setIsPlaying] = useState(false);
+  const [interpolation, setInterpolation] = useState('step');
   
   // Refs
   const isGizmoDraggingRef = useRef(false);
   const sceneManagerRef = useRef(null);
+
+  const seekToTime = useCallback(time => {
+    if (!Number.isFinite(time)) return;
+    setCurrentTime(Math.min(animationDuration, Math.max(0, time)));
+    // Clicking the current marker again snaps back from any unkeyed edits.
+    setSeekVersion(version => version + 1);
+  }, [animationDuration]);
+
+  const replaceTimeline = useCallback(clip => {
+    setAnimationName(clip.animationName || 'MyAnimation');
+    setAnimationDuration(clip.animationDuration);
+    setKeyFrames(clip.keyFrames);
+    setCurrentTime(0);
+    if (clip.interpolation) setInterpolation(clip.interpolation);
+  }, []);
 
   // Reset function for new model
   const resetAllStateForNewModel = useCallback(() => {
@@ -42,16 +57,13 @@ export const AnimationProvider = ({ children }) => {
     setBoneRotationUI({ x: 0, y: 0, z: 0 });
     setBonePositionUI({ x: 0, y: 0, z: 0 });
     setLivePose({});
-    setKeyFrames({});
-    setCurrentTime(0);
+    replaceTimeline({ animationDuration: 5, keyFrames: {} });
     setIsPlaying(false);
-  }, []);
+  }, [replaceTimeline]);
 
 
   const value = {
     // Model & Scene
-    selectedModelFile,
-    setSelectedModelFile,
     isLoadingModel,
     setIsLoadingModel,
     isSceneReady,
@@ -76,10 +88,15 @@ export const AnimationProvider = ({ children }) => {
     setAnimationDuration,
     currentTime,
     setCurrentTime,
+    seekToTime,
+    seekVersion,
     keyFrames,
     setKeyFrames,
     isPlaying,
     setIsPlaying,
+    interpolation,
+    setInterpolation,
+    replaceTimeline,
     
     // Refs
     isGizmoDraggingRef,

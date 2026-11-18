@@ -1,7 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimationProvider, useAnimation } from './contexts/AnimationContext';
 import { useSceneManager } from './hooks/useSceneManager';
 import { useKeyframes } from './hooks/useKeyframes';
+import { usePlayback } from './hooks/usePlayback';
+import { useKeyframeNavigation } from './hooks/useKeyframeNavigation';
+import { FRAME_RATE } from './utils/animationTracks';
 import Timeline from './components/Timeline';
 import BoneList from './components/BoneList';
 import TransformPanel from './components/TransformPanel';
@@ -9,377 +12,179 @@ import ExportImportPanel from './components/ExportImportPanel';
 import JsonModal from './components/modals/JsonModal';
 import ImportModal from './components/modals/ImportModal';
 import InfoModal from './components/modals/InfoModal';
-import './index.css';
+import FilePicker from './components/FilePicker';
+import Icon from './components/Icon';
+import Section from './components/Section';
+import Viewport from './components/Viewport';
+import logo from './assets/icon.svg';
 
 function AppContent() {
   const viewportRef = useRef(null);
   const [activeTab, setActiveTab] = useState('scene');
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [showJsonModal, setShowJsonModal] = useState(false);
-  const [showInfoModal, setShowInfoModal] = useState(true);
-  const [isDraggingOverModelArea, setIsDraggingOverModelArea] = useState(false);
-
+  const [dialog, setDialog] = useState(null);
   const {
-    selectedModelFile,
-    setSelectedModelFile,
-    isLoadingModel,
-    isSceneReady,
-    isPlaying,
-    setIsPlaying,
-    animationName,
-    setAnimationName,
-    animationDuration,
-    setAnimationDuration,
-    currentTime,
-    setCurrentTime,
-    bones,
-    keyFrames,
-    livePose,
-    sceneManagerRef,
-    setLivePose,
-    isGizmoDraggingRef
+    isLoadingModel, isSceneReady, isPlaying, animationName, interpolation,
+    setAnimationName, animationDuration, setAnimationDuration, currentTime, setCurrentTime, seekToTime,
+    bones, isGizmoDraggingRef,
   } = useAnimation();
+  const { handleLoadModel, handleLoadDemo, modelSource, sceneError, viewportUnavailable } = useSceneManager(viewportRef);
+  const { setKeyframeFromUI, deleteKeyframeAtCurrentTime, totalKeyframeCount } = useKeyframes();
+  const playback = usePlayback();
+  const { togglePlayback } = playback;
+  const keyframeNavigation = useKeyframeNavigation();
+  const { jumpToKeyframe } = keyframeNavigation;
 
-  const { handleLoadModel } = useSceneManager(viewportRef);
+  const animateEnabled = isSceneReady && bones.length > 0;
+  const modelInputDisabled = isPlaying || isLoadingModel || viewportUnavailable;
+  const editingDisabled = !animateEnabled || isLoadingModel || isPlaying;
 
-  const { setKeyframeFromUI, deleteKeyframeAtCurrentTime: deleteKfShortcut } = useKeyframes();
+  function loadModel(file) {
+    if (!modelInputDisabled && !isGizmoDraggingRef.current) handleLoadModel(file);
+  }
 
-  const processModelFile = useCallback((file) => {
-    if (file && file.name.toLowerCase().endsWith('.fbx')) {
-      setSelectedModelFile(file);
-      handleLoadModel(file);
-    } else if (file) {
-      alert('Please select an FBX file');
-    }
-  }, [setSelectedModelFile, handleLoadModel]);
-
-  const handleFileSelect = useCallback((event) => {
-    const file = event.target.files[0];
-    processModelFile(file);
-    if (event.target) {
-      event.target.value = null;
-    }
-  }, [processModelFile]);
-
-  const isModelInputDisabled = isLoadingModel || isPlaying;
-
-  const handleModelDragEnter = useCallback((event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!isModelInputDisabled) {
-      setIsDraggingOverModelArea(true);
-    }
-  }, [isModelInputDisabled]);
-
-  const handleModelDragLeave = useCallback((event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDraggingOverModelArea(false);
-  }, []);
-
-  const handleModelDragOver = useCallback((event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!isModelInputDisabled && !isDraggingOverModelArea) {
-      setIsDraggingOverModelArea(true);
-    }
-    if (!isModelInputDisabled) {
-      event.dataTransfer.dropEffect = 'copy';
-    } else {
-      event.dataTransfer.dropEffect = 'none';
-    }
-  }, [isModelInputDisabled, isDraggingOverModelArea]);
-
-  const handleModelDrop = useCallback((event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDraggingOverModelArea(false);
-    if (isModelInputDisabled) return;
-
-    const files = event.dataTransfer.files;
-    if (files && files.length > 0) {
-      processModelFile(files[0]);
-      event.dataTransfer.clearData();
-    }
-  }, [isModelInputDisabled, processModelFile]);
-
+  async function loadDemo() {
+    if (modelInputDisabled || isGizmoDraggingRef.current) return;
+    if (totalKeyframeCount && !window.confirm('Replace the current model and its keyframes with the demo rig?')) return;
+    if (await handleLoadDemo()) setActiveTab('animate');
+  }
 
   useEffect(() => {
-    const preventGlobalDefaults = (event) => {
-        event.preventDefault();
+    const preventFileNavigation = event => event.preventDefault();
+    window.addEventListener('dragover', preventFileNavigation);
+    window.addEventListener('drop', preventFileNavigation);
+    return () => {
+      window.removeEventListener('dragover', preventFileNavigation);
+      window.removeEventListener('drop', preventFileNavigation);
     };
-    const preventGlobalDropOpen = (event) => {
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = event => {
+      if (dialog || !animateEnabled || isLoadingModel || isGizmoDraggingRef.current || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (event.key === ' ') {
+        if (event.target instanceof Element && event.target.closest('button:focus-visible, a:focus-visible')) return;
         event.preventDefault();
-        // For general drops on the window, we set dropEffect to none unless a specific zone handles it.
-        // However, our specific drop zones will set it to 'copy'.
-        // This ensures files aren't opened by the browser if dropped outside a target.
-        // The `dragover` on specific drop zones will override this for those areas.
-        if (event.target.id !== "model-file-input" && event.target.id !== "animation-file-input" && !event.target.closest('.file-input-label')) {
-             event.dataTransfer.dropEffect = "none";
-        }
-    };
-
-    window.addEventListener('dragover', preventGlobalDefaults);
-    window.addEventListener('drop', preventGlobalDropOpen);
-
-    const handleKeyDown = (event) => {
-      const activeElement = document.activeElement;
-      if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')) {
-        if (activeElement.classList.contains('toolbar-input') && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-             // Allow default behavior for time input
-        } else {
-            return;
-        }
-      }
-      if (showImportModal || showJsonModal || showInfoModal || isGizmoDraggingRef.current) {
+        togglePlayback();
         return;
       }
+      if (isPlaying) return;
 
-      let handled = false;
-      const frameDuration = 1 / 30; // Assuming 30fps for frame steps
-
-      switch (event.key) {
-        case ' ': // Spacebar
-          if (isSceneReady) {
-            if (isPlaying) {
-              if (sceneManagerRef.current) sceneManagerRef.current.pauseAnimation();
-              setIsPlaying(false);
-            } else {
-              if (!Object.values(keyFrames).some(t => t && t.length > 0)) {
-                console.warn("No keyframes to play.");
-                return;
-              }
-              if (sceneManagerRef.current) {
-                if (Object.keys(livePose).length > 0) {
-                  sceneManagerRef.current.applyPoseFromData(livePose);
-                }
-                sceneManagerRef.current.resumeAnimation();
-                sceneManagerRef.current.playAnimationFromData(keyFrames, animationDuration);
-              }
-              setIsPlaying(true);
-            }
-            handled = true;
-          }
-          break;
-        case 's':
-        case 'S':
-        case 'k':
-        case 'K':
-          if (isSceneReady && !isPlaying) {
-            setKeyframeFromUI();
-            handled = true;
-          }
-          break;
-        case 'Delete':
-        case 'Backspace':
-          if (isSceneReady && !isPlaying) {
-            deleteKfShortcut();
-            handled = true;
-          }
-          break;
-        case 'ArrowLeft':
-          if (isSceneReady && !isPlaying) {
-            const newTime = event.shiftKey
-              ? Math.max(0, currentTime - 0.1)
-              : Math.max(0, currentTime - frameDuration);
-            setCurrentTime(parseFloat(newTime.toFixed(4)));
-            handled = true;
-          }
-          break;
-        case 'ArrowRight':
-          if (isSceneReady && !isPlaying) {
-            const newTime = event.shiftKey
-              ? Math.min(animationDuration, currentTime + 0.1)
-              : Math.min(animationDuration, currentTime + frameDuration);
-            setCurrentTime(parseFloat(newTime.toFixed(4)));
-            handled = true;
-          }
-          break;
-        case 'Home':
-          if (isSceneReady && !isPlaying) {
-            setCurrentTime(0);
-            handled = true;
-          }
-          break;
-        case 'End':
-          if (isSceneReady && !isPlaying) {
-            setCurrentTime(animationDuration);
-            handled = true;
-          }
-          break;
-        default:
-          break;
-      }
-
-      if (handled) {
-        event.preventDefault();
-      }
+      const key = event.key.toLowerCase();
+      if (key === 's' || key === 'k') setKeyframeFromUI();
+      else if (key === 'delete' || key === 'backspace') deleteKeyframeAtCurrentTime();
+      else if (key === '[' || key === ']') jumpToKeyframe(key === '[' ? -1 : 1);
+      else if (key === 'home') seekToTime(0);
+      else if (key === 'end') seekToTime(animationDuration);
+      else if (key === 'arrowleft' || key === 'arrowright') {
+        const direction = key === 'arrowleft' ? -1 : 1;
+        const time = event.shiftKey ? currentTime + direction * 0.1 : (Math.round(currentTime * FRAME_RATE) + direction) / FRAME_RATE;
+        seekToTime(Number(time.toFixed(4)));
+      } else return;
+      event.preventDefault();
     };
-
     window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('dragover', preventGlobalDefaults);
-      window.removeEventListener('drop', preventGlobalDropOpen);
-    };
-  }, [
-    isSceneReady, isPlaying, setIsPlaying, keyFrames, animationDuration, currentTime, setCurrentTime,
-    livePose, sceneManagerRef, setKeyframeFromUI, deleteKfShortcut,
-    showImportModal, showJsonModal, showInfoModal, isGizmoDraggingRef
-  ]);
-
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [dialog, animateEnabled, isPlaying, isLoadingModel, isGizmoDraggingRef, currentTime, animationDuration, seekToTime, togglePlayback, jumpToKeyframe, setKeyframeFromUI, deleteKeyframeAtCurrentTime]);
 
   return (
     <div className="app-container">
-      <div className="left-panel">
-        <div className="panel-tabs">
-          <button
-            className={`tab-button ${activeTab === 'scene' ? 'active' : ''}`}
-            onClick={() => setActiveTab('scene')}
-          >
-            Scene
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'animate' ? 'active' : ''}`}
-            onClick={() => setActiveTab('animate')}
-            disabled={!isSceneReady || bones.length === 0}
-          >
-            Animate
-          </button>
+      <header className="titlebar">
+        <div className="brand">
+          <img src={logo} alt="" width="43" height="43" />
+          <div className="brand-text">
+            <h1>Keyframe <span>Animation Tool</span></h1>
+            <span className="brand-subtitle">Skeletal animation workbench</span>
+          </div>
+          <span className="version" title={`Version ${__APP_VERSION__}`}>V{__APP_VERSION__}</span>
         </div>
+        <div className="titlebar-actions">
+          <span className="session-label"><i className="signal online" /> Local session</span>
+          <button className="button secondary" onClick={() => setDialog('json')} disabled={!isSceneReady} title="View Animation JSON" aria-label="View JSON"><Icon name="code" /> <span>View JSON</span></button>
+          <button className="button secondary" onClick={() => setDialog('info')} title="Help and keyboard shortcuts" aria-label="Help and keyboard shortcuts"><Icon name="info" /> <span>Help</span></button>
+        </div>
+      </header>
 
-        <div className={`tab-content ${activeTab === 'scene' ? 'active' : ''}`}>
-          <div className="section">
-            <h4>Animation Setup</h4>
-            <div className="form-row">
-              <label>Name</label>
-              <input
-                type="text"
-                value={animationName}
-                onChange={(e) => setAnimationName(e.target.value)}
-                disabled={isPlaying || !isSceneReady}
-              />
-            </div>
-            <div className="form-row">
-              <label>Duration (s)</label>
-              <input
-                type="number"
-                value={animationDuration}
-                min="0.1"
-                step="0.1"
-                onChange={(e) => {
-                  const d = parseFloat(e.target.value);
-                  if (d > 0) {
-                    setAnimationDuration(d);
-                    if (currentTime > d) setCurrentTime(d);
-                  }
-                }}
-                disabled={isPlaying || !isSceneReady}
-              />
-            </div>
+      <div className="workspace">
+        <aside className="left-panel" aria-label="Project controls">
+          <div className="window-bar project-bar">
+            <h2 className="window-title"><Icon name="layers" /> Project</h2>
+            <span className="window-id">KAT / EDIT</span>
+          </div>
+          <div className="panel-tabs" aria-label="Project view">
+            <button className={`tab-button${activeTab === 'scene' || !animateEnabled ? ' active' : ''}`} aria-pressed={activeTab === 'scene' || !animateEnabled} onClick={() => setActiveTab('scene')}><Icon name="box" /> Scene</button>
+            <button className={`tab-button${activeTab === 'animate' && animateEnabled ? ' active' : ''}`} aria-pressed={activeTab === 'animate' && animateEnabled} onClick={() => setActiveTab('animate')} disabled={!animateEnabled}><Icon name="bone" /> Animate</button>
           </div>
 
-          <div className="section">
-            <h4>Model</h4>
-            <div className="file-input-wrapper">
-              <input
-                type="file"
+          <div className="tab-content" hidden={activeTab === 'animate' && animateEnabled}>
+            <Section index="01" title="Model source">
+              <FilePicker
                 id="model-file-input"
-                accept=".fbx"
-                onChange={handleFileSelect}
-                disabled={isModelInputDisabled}
-                style={{display: 'none'}}
+                accept=".fbx,.glb,.gltf"
+                title={modelSource?.name ?? 'Import model'}
+                hint={isSceneReady ? 'Replace FBX, GLB or GLTF' : 'Drop FBX, GLB or GLTF here'}
+                onFile={loadModel}
+                disabled={modelInputDisabled}
               />
-              <label
-                htmlFor="model-file-input"
-                className={`file-input-label ${isModelInputDisabled ? 'disabled' : ''} ${isDraggingOverModelArea ? 'drag-over' : ''}`}
-                onDragEnter={handleModelDragEnter}
-                onDragLeave={handleModelDragLeave}
-                onDragOver={handleModelDragOver}
-                onDrop={handleModelDrop}
-                onClick={(e) => { if (isModelInputDisabled) e.preventDefault();}}
-              >
-                {selectedModelFile ? selectedModelFile.name : 'Choose FBX Model... (or drop here)'}
-              </label>
-            </div>
-            {isLoadingModel && <div className="loading-text">Loading model...</div>}
+              <button className="button secondary wide" onClick={loadDemo} disabled={modelInputDisabled} title="Try the built-in Relay R-07 rig">
+                <Icon name="robot" /> Load demo rig <span className="button-format">R-07</span>
+              </button>
+              {isSceneReady && !animateEnabled && <p className="section-hint">No skeleton found. Load a rigged model to keyframe bones.</p>}
+            </Section>
+
+            <Section index="02" title="Animation setup">
+              <div className="form-row">
+                <label htmlFor="animation-name">Name</label>
+                <input id="animation-name" type="text" value={animationName} maxLength={128} onChange={event => setAnimationName(event.target.value)} disabled={editingDisabled} />
+              </div>
+              <div className="form-row">
+                <label htmlFor="animation-duration">Duration</label>
+                <div className="unit-field">
+                  <input id="animation-duration" type="number" value={animationDuration} min="0.0001" step="0.0001" onChange={event => {
+                    const duration = event.target.valueAsNumber;
+                    if (!Number.isFinite(duration) || duration <= 0) return;
+                    setAnimationDuration(duration);
+                    if (currentTime > duration) setCurrentTime(duration);
+                  }} disabled={editingDisabled} />
+                  <span aria-hidden="true">sec</span>
+                </div>
+              </div>
+            </Section>
+            <ExportImportPanel key={modelSource?.id} onImportJson={() => setDialog('import')} />
           </div>
 
-          <ExportImportPanel setShowImportModal={setShowImportModal} />
-        </div>
+          <div className="tab-content" hidden={activeTab === 'scene' || !animateEnabled}>
+            <BoneList active={activeTab === 'animate' && animateEnabled} />
+            <TransformPanel />
+          </div>
+          <div className="project-footer"><span>CLIP DATA</span><span>{totalKeyframeCount} {totalKeyframeCount === 1 ? 'KEYFRAME' : 'KEYFRAMES'}</span></div>
+        </aside>
 
-        <div className={`tab-content ${activeTab === 'animate' ? 'active' : ''}`}>
-          <BoneList />
-          <TransformPanel />
-        </div>
+        <main className="main-area">
+          <Viewport
+            viewportRef={viewportRef}
+            sceneError={sceneError}
+            viewportUnavailable={viewportUnavailable}
+            onClickPickModel={() => document.getElementById('model-file-input').click()}
+            onLoadDemo={loadDemo}
+          />
+          <Timeline key={modelSource?.id} playback={playback} keyframeNavigation={keyframeNavigation} />
+        </main>
       </div>
 
-      <div className="main-area">
-        <div className="top-toolbar">
-          <div className="toolbar-group">
-            <span className="toolbar-label">Time:</span>
-            <input
-              type="number"
-              className="toolbar-input"
-              min="0"
-              max={animationDuration}
-              step="0.01"
-              value={currentTime.toFixed(2)}
-              onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
-              disabled={!isSceneReady || isPlaying}
-            />
-            <span className="toolbar-label-secondary">/ {animationDuration.toFixed(2)}s</span>
-          </div>
+      <footer className="status-bar">
+        <span className="system-status"><i className={`signal ${sceneError ? 'fault' : 'online'}`} />{isLoadingModel ? 'Reading file' : sceneError ? 'Check viewport' : isPlaying ? 'Playing clip' : animateEnabled ? 'Rig ready' : isSceneReady ? 'Model ready' : 'Ready'}</span>
+        <span className="privacy-status">Your files stay on this device</span>
+        <span className="fps-status">{FRAME_RATE} FPS <b>//</b> {interpolation}</span>
+      </footer>
 
-          <div className="toolbar-separator"></div>
-
-          <div className="toolbar-group" style={{marginLeft: 'auto'}}>
-            <button
-              className="button secondary"
-              onClick={() => setShowInfoModal(true)}
-              title="About this application (Info & Shortcuts)"
-            >
-              Info
-            </button>
-            <button
-              className="button secondary"
-              onClick={() => setShowJsonModal(true)}
-              disabled={!isSceneReady}
-            >
-              View JSON
-            </button>
-          </div>
-        </div>
-
-        <div ref={viewportRef} className="viewport-container">
-          {(isLoadingModel || (!isSceneReady && !selectedModelFile)) &&
-            <div className="loading-overlay">
-              {isLoadingModel ? 'Loading Model...' : 'Please select an FBX model file to begin.'}
-            </div>
-          }
-
-          {isSceneReady && (
-            <div className="viewport-controls">
-            </div>
-          )}
-        </div>
-
-        <Timeline />
-      </div>
-
-      <JsonModal show={showJsonModal} onClose={() => setShowJsonModal(false)} />
-      <ImportModal show={showImportModal} onClose={() => setShowImportModal(false)} />
-      <InfoModal show={showInfoModal} onClose={() => setShowInfoModal(false)} />
+      {dialog === 'json' && <JsonModal onClose={() => setDialog(null)} />}
+      {dialog === 'import' && <ImportModal onClose={() => setDialog(null)} />}
+      {dialog === 'info' && <InfoModal onClose={() => setDialog(null)} />}
     </div>
   );
 }
 
-function App() {
-  return (
-    <AnimationProvider>
-      <AppContent />
-    </AnimationProvider>
-  );
+export default function App() {
+  return <AnimationProvider><AppContent /></AnimationProvider>;
 }
-
-export default App;

@@ -1,83 +1,35 @@
-import React, { useMemo } from 'react';
+import { useRef, useState } from 'react';
 import { useAnimation } from '../../contexts/AnimationContext';
 import { generateAnimationJson } from '../../utils/animationHelpers';
+import { downloadAnimation } from '../../utils/download';
 import { useKeyframes } from '../../hooks/useKeyframes';
+import Dialog from './Dialog';
 
-const JsonModal = ({ show, onClose }) => {
-  const { animationName, animationDuration, keyFrames, isSceneReady } = useAnimation();
+export default function JsonModal({ onClose }) {
+  const { animationName, animationDuration, keyFrames, interpolation } = useAnimation();
   const { totalKeyframeCount } = useKeyframes();
+  const [status, setStatus] = useState('');
+  const outputRef = useRef(null);
+  const text = totalKeyframeCount ? generateAnimationJson(animationName, animationDuration, keyFrames, interpolation) : '// No keyframes have been set.';
 
-  const displayJsonString = useMemo(() => {
-    if (isSceneReady && totalKeyframeCount > 0) {
-      return generateAnimationJson(animationName, animationDuration, keyFrames);
-    } else if (isSceneReady && totalKeyframeCount === 0) {
-      return '// No keyframes have been set for the current animation.';
-    } else {
-      return '// Load a model and create keyframes to see JSON data.';
+  async function copyJson() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus('Copied to clipboard.');
+    } catch {
+      outputRef.current.select();
+      setStatus('Text selected. Use your browser’s copy shortcut.');
     }
-  }, [keyFrames, animationName, animationDuration, isSceneReady, totalKeyframeCount]);
-
-  const handleCopyJson = () => {
-    if (!isSceneReady || totalKeyframeCount === 0) {
-      alert("No JSON data to copy.");
-      return;
-    }
-    navigator.clipboard.writeText(displayJsonString)
-      .then(() => alert("Animation JSON copied to clipboard!"))
-      .catch(err => {
-        console.error("Failed to copy JSON:", err);
-        alert("Failed to copy JSON. See console for details.");
-      });
-  };
-
-  const handleExportJson = () => {
-    if (!isSceneReady) { 
-      alert("Load a model first."); 
-      return; 
-    }
-    if (totalKeyframeCount === 0) { 
-      alert("No keyframes to export."); 
-      return; 
-    }
-    const blob = new Blob([displayJsonString], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; 
-    a.download = `${animationName.replace(/\s+/g, '_') || 'animation'}.json`;
-    a.click(); 
-    URL.revokeObjectURL(url); 
-    a.remove();
-  };
-
-  if (!show) return null;
+  }
 
   return (
-    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-content large">
-        <h4>Animation JSON</h4>
-        <div className="json-controls">
-          <button 
-            className="button secondary" 
-            onClick={handleCopyJson}
-            disabled={!isSceneReady || totalKeyframeCount === 0}
-          >
-            Copy
-          </button>
-          <button 
-            className="button secondary" 
-            onClick={handleExportJson}
-            disabled={!isSceneReady || totalKeyframeCount === 0}
-          >
-            Download
-          </button>
-        </div>
-        <pre className="json-display-modal">{displayJsonString}</pre>
-        <div className="modal-actions">
-          <button className="button secondary" onClick={onClose}>Close</button>
-        </div>
+    <Dialog title="Animation JSON" onClose={onClose}>
+      <textarea className="json-field" ref={outputRef} aria-label="Animation JSON data" rows={14} readOnly value={text} />
+      <div className="modal-actions">
+        <span className="panel-message" role="status">{status}</span>
+        <button className="button secondary" onClick={copyJson} disabled={!totalKeyframeCount}>Copy</button>
+        <button className="button primary" onClick={() => downloadAnimation(text, animationName, 'json', 'application/json')} disabled={!totalKeyframeCount}>Download JSON</button>
       </div>
-    </div>
+    </Dialog>
   );
-};
-
-export default JsonModal;
+}

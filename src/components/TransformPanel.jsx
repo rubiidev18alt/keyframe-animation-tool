@@ -1,147 +1,67 @@
-import { useCallback } from 'react';
 import { useAnimation } from '../contexts/AnimationContext';
 import { useKeyframes } from '../hooks/useKeyframes';
 import { eulerToQuaternion } from '../utils/animationHelpers';
+import Section from './Section';
 
-const TransformPanel = () => {
+const AXES = ['x', 'y', 'z'];
+
+function TransformFields({ type, value, disabled, onChange }) {
+  const rotation = type === 'Rotation';
+  return (
+    <fieldset className="transform-section">
+      <legend>{type} <span>{rotation ? '° / LOCAL' : 'READ ONLY'}</span></legend>
+      <div className="transform-grid">
+        {AXES.map(axis => (
+          <label key={axis} className="transform-field">
+            <span className={`axis-label ${axis}`}>{axis.toUpperCase()}</span>
+            <input
+              className="transform-input"
+              type="number"
+              aria-label={`${type} ${axis.toUpperCase()}`}
+              value={rotation ? Number(value[axis].toFixed(2)) : value[axis].toFixed(3)}
+              step={rotation ? 1 : 0.01}
+              readOnly={!rotation}
+              disabled={rotation && disabled}
+              onChange={event => onChange?.(axis, event.target.valueAsNumber)}
+            />
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+export default function TransformPanel() {
   const {
-    selectedBoneName,
-    isSceneReady,
-    isPlaying,
-    boneRotationUI,
-    setBoneRotationUI,
-    bonePositionUI,
-    setLivePose,
-    sceneManagerRef
+    selectedBoneName, isSceneReady, isPlaying, isLoadingModel, boneRotationUI, setBoneRotationUI,
+    bonePositionUI, setLivePose, isGizmoDraggingRef,
   } = useAnimation();
-  
-  const { 
-    setKeyframeFromUI, 
-    deleteKeyframeAtCurrentTime,
-    hasKeyframeAtCurrentTime,
-    selectedBoneKeyframeCount 
-  } = useKeyframes();
-
-  const handleRotationUIChange = useCallback((axis, value) => {
-    if (!isSceneReady || isPlaying || !selectedBoneName) return;
-    const newRotUI = { ...boneRotationUI, [axis]: parseFloat(value) || 0 };
-    setBoneRotationUI(newRotUI);
-    
-    const quaternion = eulerToQuaternion(newRotUI);
-    
-    setLivePose(prev => {
-      const currentBoneDataInLivePose = prev[selectedBoneName] || {};
-      const existingPosition = currentBoneDataInLivePose.position || 
-                               sceneManagerRef.current?.boneMap.get(selectedBoneName)?.userData.initialLocalPosition || 
-                               {x:0,y:0,z:0};
-      return {
-        ...prev,
-        [selectedBoneName]: { 
-          position: { ...existingPosition }, 
-          quaternion
-        }
-      };
-    });
-  }, [isSceneReady, isPlaying, selectedBoneName, boneRotationUI, setBoneRotationUI, setLivePose, sceneManagerRef]);
-
-
+  const { setKeyframeFromUI, deleteKeyframeAtCurrentTime, hasKeyframeAtCurrentTime, selectedBoneKeyframeCount } = useKeyframes();
   if (!selectedBoneName || !isSceneReady) return null;
+  const disabled = isPlaying || isLoadingModel;
+
+  function rotate(axis, value) {
+    if (disabled || isGizmoDraggingRef.current || !Number.isFinite(value)) return;
+    const rotation = { ...boneRotationUI, [axis]: value };
+    setBoneRotationUI(rotation);
+    const quaternion = eulerToQuaternion(rotation);
+    setLivePose(pose => ({ ...pose, [selectedBoneName]: { position: { ...bonePositionUI }, quaternion } }));
+  }
 
   return (
     <>
-      <div className="section">
-        <h4>Transform</h4>
-        <div className="transform-section">
-          <div className="transform-label">POSITION (Read-only)</div>
-          <div className="transform-grid">
-            <div></div>
-            <div className="axis-label x">X</div>
-            <div className="axis-label y">Y</div>
-            <div className="axis-label z">Z</div>
-            
-            <div className="transform-label-small">Local</div>
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={bonePositionUI.x.toFixed(3)} 
-              step="0.01" 
-              disabled={true}
-            />
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={bonePositionUI.y.toFixed(3)} 
-              step="0.01" 
-              disabled={true}
-            />
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={bonePositionUI.z.toFixed(3)} 
-              step="0.01" 
-              disabled={true}
-            />
-          </div>
+      <Section index="02" title="Transform">
+        <p className="selection-name" title={selectedBoneName}>{selectedBoneName}</p>
+        <TransformFields type="Position" value={bonePositionUI} />
+        <TransformFields type="Rotation" value={boneRotationUI} disabled={disabled} onChange={rotate} />
+      </Section>
+      <Section index="03" title="Keyframe" detail={`${selectedBoneKeyframeCount} ON TRACK`}>
+        <div className="button-group key-actions">
+          <button className="button primary" disabled={disabled} onClick={() => !isGizmoDraggingRef.current && setKeyframeFromUI()} title="Set keyframe (S or K)">{hasKeyframeAtCurrentTime ? 'Update Key' : 'Set Key'}</button>
+          <button className="button secondary" disabled={disabled || !hasKeyframeAtCurrentTime} onClick={() => !isGizmoDraggingRef.current && deleteKeyframeAtCurrentTime()} title="Delete keyframe (Delete)">Delete Key</button>
         </div>
-
-        <div className="transform-section">
-          <div className="transform-label">ROTATION (°)</div>
-          <div className="transform-grid">
-            <div></div>
-            <div className="axis-label x">X</div>
-            <div className="axis-label y">Y</div>
-            <div className="axis-label z">Z</div>
-            
-            <div className="transform-label-small">Euler</div>
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={boneRotationUI.x.toFixed(2)} 
-              step="1" 
-              onChange={(e) => handleRotationUIChange('x', e.target.value)} 
-              disabled={isPlaying}
-            />
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={boneRotationUI.y.toFixed(2)} 
-              step="1" 
-              onChange={(e) => handleRotationUIChange('y', e.target.value)} 
-              disabled={isPlaying}
-            />
-            <input 
-              className="transform-input" 
-              type="number" 
-              value={boneRotationUI.z.toFixed(2)} 
-              step="1" 
-              onChange={(e) => handleRotationUIChange('z', e.target.value)} 
-              disabled={isPlaying}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="section">
-        <h4>Keyframes {selectedBoneKeyframeCount > 0 && `(${selectedBoneKeyframeCount})`}</h4>
-        <div className="button-group">
-          <button 
-            className="button" 
-            onClick={setKeyframeFromUI}
-            disabled={!selectedBoneName || !isSceneReady || isPlaying}
-          >
-            {hasKeyframeAtCurrentTime ? 'Update Key' : 'Set Key'}
-          </button>
-          <button 
-            className="button secondary" 
-            onClick={deleteKeyframeAtCurrentTime}
-            disabled={!selectedBoneName || !isSceneReady || isPlaying || !hasKeyframeAtCurrentTime}
-          >
-            Delete Key
-          </button>
-        </div>
-      </div>
+        <p className="section-hint">Click a key on the timeline to snap to its pose.</p>
+      </Section>
     </>
   );
-};
-
-export default TransformPanel;
+}
